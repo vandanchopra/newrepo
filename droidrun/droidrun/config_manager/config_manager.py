@@ -187,6 +187,24 @@ class CredentialsConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """Memory system configuration for episodic learning and context recall."""
+
+    enabled: bool = False
+    store_type: str = "in_memory"  # "in_memory" or "qdrant"
+    collection_name: str = "droidrun_memory"
+    similarity_threshold: float = 0.7
+    max_recalled_episodes: int = 5
+    cache_results: bool = True
+    cache_ttl_seconds: int = 3600
+    # Qdrant settings (only used if store_type="qdrant")
+    qdrant_host: Optional[str] = None
+    qdrant_port: int = 6333
+    qdrant_url: Optional[str] = None
+    qdrant_api_key: Optional[str] = None
+
+
+@dataclass
 class DroidrunConfig:
     """Complete DroidRun configuration schema."""
 
@@ -198,6 +216,7 @@ class DroidrunConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     credentials: CredentialsConfig = field(default_factory=CredentialsConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     safe_execution: SafeExecutionConfig = field(default_factory=SafeExecutionConfig)
 
     def __post_init__(self):
@@ -320,6 +339,10 @@ class DroidrunConfig:
             else SafeExecutionConfig()
         )
 
+        # Parse memory config
+        memory_data = data.get("memory", {})
+        memory_config = MemoryConfig(**memory_data) if memory_data else MemoryConfig()
+
         return cls(
             agent=agent_config,
             llm_profiles=llm_profiles,
@@ -329,6 +352,7 @@ class DroidrunConfig:
             logging=LoggingConfig(**data.get("logging", {})),
             tools=ToolsConfig(**data.get("tools", {})),
             credentials=CredentialsConfig(**data.get("credentials", {})),
+            memory=memory_config,
             safe_execution=safe_execution_config,
         )
 

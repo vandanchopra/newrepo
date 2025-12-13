@@ -9,12 +9,12 @@ Production-ready Claude integration with:
 - Prometheus metrics
 """
 
-from droidrun.agent.claude.claude_agent import (
+from .claude_agent import (
     ClaudeCodeAgent,
     ClaudeAgentConfig,
     ClaudeResponse,
 )
-from droidrun.agent.claude.streaming import (
+from .streaming import (
     StreamingHandler,
     StreamEvent,
     StreamEventType,

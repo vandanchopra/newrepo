@@ -14,12 +14,21 @@ import asyncio
 import logging
 import time
 
-from droidrun.agent.research.providers import (
-    SearchProvider,
-    SearchResult,
-    MockSearchProvider,
-    CompositeSearchProvider,
-)
+try:
+    from .providers import (
+        SearchProvider,
+        SearchResult,
+        MockSearchProvider,
+        CompositeSearchProvider,
+    )
+except ImportError:
+    # Fallback for standalone testing
+    from providers import (
+        SearchProvider,
+        SearchResult,
+        MockSearchProvider,
+        CompositeSearchProvider,
+    )
 
 logger = logging.getLogger("droidrun.research")
 
@@ -104,7 +113,10 @@ class ResearchAgent:
 
         # Try to create real providers
         try:
-            from droidrun.agent.research.providers import TavilyProvider
+            try:
+                from .providers import TavilyProvider
+            except ImportError:
+                from providers import TavilyProvider
             tavily = TavilyProvider()
             if tavily.is_available:
                 providers.append(tavily)
@@ -113,7 +125,10 @@ class ResearchAgent:
             logger.debug(f"Tavily provider not available: {e}")
 
         try:
-            from droidrun.agent.research.providers import BraveSearchProvider
+            try:
+                from .providers import BraveSearchProvider
+            except ImportError:
+                from providers import BraveSearchProvider
             brave = BraveSearchProvider()
             if brave.is_available:
                 providers.append(brave)
@@ -122,7 +137,10 @@ class ResearchAgent:
             logger.debug(f"Brave provider not available: {e}")
 
         try:
-            from droidrun.agent.research.providers import PerplexityProvider
+            try:
+                from .providers import PerplexityProvider
+            except ImportError:
+                from providers import PerplexityProvider
             perplexity = PerplexityProvider()
             if perplexity.is_available:
                 providers.append(perplexity)

@@ -5,18 +5,18 @@ Production-ready episodic memory with vector store integration,
 state persistence, and semantic retrieval capabilities.
 """
 
-from droidrun.agent.memory.memory_manager import (
+from .memory_manager import (
     MemoryManager,
     MemoryConfig,
     EpisodeRecord,
 )
-from droidrun.agent.memory.stores import (
+from .stores import (
     BaseMemoryStore,
     InMemoryStore,
     QdrantMemoryStore,
     LocalEmbeddingProvider,
 )
-from droidrun.agent.memory.embeddings import (
+from .embeddings import (
     EmbeddingProvider,
     OpenAIEmbeddingProvider,
     OllamaEmbeddingProvider,

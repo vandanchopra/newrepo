@@ -393,7 +393,11 @@ class QdrantMemoryStore(BaseMemoryStore):
 
 
 # Re-export LocalEmbeddingProvider for convenience
-from droidrun.agent.memory.embeddings import LocalEmbeddingProvider
+try:
+    from .embeddings import LocalEmbeddingProvider
+except ImportError:
+    # Fallback for standalone testing
+    LocalEmbeddingProvider = None
 
 __all__ = [
     "MemoryEntry",

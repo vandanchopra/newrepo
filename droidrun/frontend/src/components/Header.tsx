@@ -1,5 +1,4 @@
 import { Menu, Moon, Sun, Settings } from 'lucide-react'
-import clsx from 'clsx'
 
 interface HeaderProps {
   onToggleSidebar: () => void

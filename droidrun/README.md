@@ -113,3 +113,147 @@ Before submitting any code, please run the following security checks:
    ```bash
    safety scan
    ```
+
+---
+
+## Extended Features (v2.0)
+
+The following features have been added for autonomous long-running operation:
+
+### Memory System
+Episodic memory with vector similarity search for recalling past interactions.
+
+```python
+from droidrun.agent.memory import MemoryManager, MemoryConfig
+
+config = MemoryConfig(
+    store_type="in_memory",  # or "qdrant" for production
+    similarity_threshold=0.7,
+    max_recalled_episodes=5,
+)
+memory = MemoryManager(config=config)
+```
+
+**Features:**
+- Local embeddings (sentence-transformers) - no external API required
+- In-memory store for testing, Qdrant for production
+- Similarity-based episode recall
+
+### Research Agent
+Multi-provider search for deep research capabilities.
+
+```python
+from droidrun.agent.research import ResearchAgent, ResearchAgentConfig
+
+config = ResearchAgentConfig(offline_mode=True)  # Set False with API keys
+agent = ResearchAgent(config=config)
+result = await agent.research("latest Android automation techniques")
+```
+
+**Providers:** Tavily, Brave Search, Mock (for testing)
+
+### Claude Agent Integration
+Claude Code agent wrapper with streaming and offline mode.
+
+```python
+from droidrun.agent.claude import ClaudeCodeAgent, ClaudeAgentConfig
+
+config = ClaudeAgentConfig(offline_mode=True)  # Set False with API key
+agent = ClaudeCodeAgent(config=config)
+response = await agent.complete("Analyze this code...")
+```
+
+### State Checkpointing
+Automatic state persistence for long-running tasks.
+
+```python
+from droidrun.agent.checkpoint import CheckpointManager, CheckpointConfig
+
+config = CheckpointConfig(
+    checkpoint_dir="checkpoints",
+    interval_seconds=300,  # Save every 5 minutes
+    max_checkpoints=10,
+)
+manager = CheckpointManager(config=config)
+```
+
+**Features:**
+- Periodic auto-save
+- Checkpoint rotation (keep N most recent)
+- Integrity validation
+- Resume from any checkpoint
+
+### Task Scheduler
+Priority-based task scheduling with persistence.
+
+```python
+from droidrun.scheduler import TaskScheduler, SchedulerConfig, TaskPriority
+
+config = SchedulerConfig(storage_path="tasks.json")
+scheduler = TaskScheduler(config=config)
+
+# Schedule a high-priority task
+task_id = scheduler.schedule_task(
+    "Open YouTube and search for tutorials",
+    priority=TaskPriority.HIGH,
+    max_retries=3,
+)
+```
+
+**Features:**
+- Priority levels: HIGH, NORMAL, LOW
+- Delayed execution
+- Cron expression support
+- Task persistence across restarts
+
+### Web Interface
+
+**Backend (FastAPI):**
+```bash
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+```
+
+**Frontend (React + Vite):**
+```bash
+cd frontend && npm run dev
+```
+
+**Docker:**
+```bash
+docker compose up -d agent frontend qdrant redis
+```
+
+### Test Suite
+
+```bash
+# Run all tests (107 tests)
+python -m pytest tests/ -v
+
+# Results:
+# - test_memory.py: 51 passed
+# - test_research.py: 9 passed
+# - test_claude_agent.py: 16 passed
+# - test_checkpoint.py: 15 passed
+# - test_scheduler.py: 16 passed
+# Total: 107 passed, 1 skipped
+```
+
+### Configuration
+
+Add to your environment:
+
+```bash
+# For production memory
+MEMORY_STORE=qdrant
+QDRANT_URL=http://localhost:6333
+
+# For research
+TAVILY_API_KEY=your_key
+BRAVE_SEARCH_API_KEY=your_key
+
+# For Claude agent
+ANTHROPIC_API_KEY=your_key
+
+# Development mode (no API keys needed)
+OFFLINE_MODE=true
+```

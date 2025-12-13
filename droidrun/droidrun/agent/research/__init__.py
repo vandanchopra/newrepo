@@ -8,18 +8,19 @@ Production-ready web research capabilities with:
 - Source merging and deduplication
 """
 
-from droidrun.agent.research.research_agent import (
+from .research_agent import (
     ResearchAgent,
     ResearchAgentConfig,
     ResearchResult,
-    SearchResult,
 )
-from droidrun.agent.research.providers import (
+from .providers import (
     SearchProvider,
+    SearchResult,
     TavilyProvider,
     PerplexityProvider,
     BraveSearchProvider,
     MockSearchProvider,
+    CompositeSearchProvider,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "PerplexityProvider",
     "BraveSearchProvider",
     "MockSearchProvider",
+    "CompositeSearchProvider",
 ]

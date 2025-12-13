@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add research module path directly to bypass llama_index dependency
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_parent_dir, 'droidrun', 'agent', 'research'))
 
 
 class TestMockSearchProvider(unittest.TestCase):
@@ -22,7 +24,7 @@ class TestMockSearchProvider(unittest.TestCase):
 
     def test_mock_provider_available(self):
         """Test that mock provider is always available."""
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         provider = MockSearchProvider()
 
@@ -31,7 +33,7 @@ class TestMockSearchProvider(unittest.TestCase):
 
     def test_mock_provider_returns_results(self):
         """Test that mock provider returns results."""
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         provider = MockSearchProvider(latency_ms=0)
 
@@ -45,7 +47,7 @@ class TestMockSearchProvider(unittest.TestCase):
 
     def test_mock_provider_deterministic(self):
         """Test that mock provider is deterministic."""
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         provider = MockSearchProvider(latency_ms=0)
 
@@ -58,7 +60,7 @@ class TestMockSearchProvider(unittest.TestCase):
 
     def test_mock_provider_different_queries(self):
         """Test that different queries produce different results."""
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         provider = MockSearchProvider(latency_ms=0)
 
@@ -73,7 +75,7 @@ class TestSearchResult(unittest.TestCase):
 
     def test_search_result_creation(self):
         """Test SearchResult creation."""
-        from droidrun.agent.research.providers import SearchResult
+        from providers import SearchResult
 
         result = SearchResult(
             title="Test Title",
@@ -95,11 +97,11 @@ class TestResearchAgent(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from droidrun.agent.research.research_agent import (
+        from research_agent import (
             ResearchAgent,
             ResearchAgentConfig,
         )
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         self.config = ResearchAgentConfig(
             offline_mode=True,
@@ -175,11 +177,11 @@ class TestResearchAgentCaching(unittest.TestCase):
 
     def test_cache_hit(self):
         """Test that caching works."""
-        from droidrun.agent.research.research_agent import (
+        from research_agent import (
             ResearchAgent,
             ResearchAgentConfig,
         )
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         config = ResearchAgentConfig(
             cache_results=True,
@@ -200,11 +202,11 @@ class TestResearchAgentCaching(unittest.TestCase):
 
     def test_clear_cache(self):
         """Test cache clearing."""
-        from droidrun.agent.research.research_agent import (
+        from research_agent import (
             ResearchAgent,
             ResearchAgentConfig,
         )
-        from droidrun.agent.research.providers import MockSearchProvider
+        from providers import MockSearchProvider
 
         config = ResearchAgentConfig(cache_results=True)
         agent = ResearchAgent(
@@ -224,7 +226,7 @@ class TestResearchAgentOffline(unittest.TestCase):
 
     def test_offline_mode_uses_mock(self):
         """Test that offline mode uses mock provider."""
-        from droidrun.agent.research.research_agent import (
+        from research_agent import (
             ResearchAgent,
             ResearchAgentConfig,
         )
@@ -242,7 +244,7 @@ class TestResearchAgentOffline(unittest.TestCase):
 
     def test_no_api_keys_falls_back_to_mock(self):
         """Test that missing API keys fall back to mock."""
-        from droidrun.agent.research.research_agent import (
+        from research_agent import (
             ResearchAgent,
             ResearchAgentConfig,
         )
@@ -262,7 +264,7 @@ class TestCompositeSearchProvider(unittest.TestCase):
 
     def test_composite_combines_results(self):
         """Test that composite provider combines results."""
-        from droidrun.agent.research.providers import (
+        from providers import (
             CompositeSearchProvider,
             MockSearchProvider,
         )
@@ -282,7 +284,7 @@ class TestCompositeSearchProvider(unittest.TestCase):
 
     def test_composite_deduplicates(self):
         """Test that composite provider deduplicates by URL."""
-        from droidrun.agent.research.providers import (
+        from providers import (
             CompositeSearchProvider,
             MockSearchProvider,
         )

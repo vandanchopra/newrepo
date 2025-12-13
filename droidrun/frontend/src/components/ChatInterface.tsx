@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, StopCircle, Loader2 } from 'lucide-react'
+import { Send, Loader2 } from 'lucide-react'
 import { Message } from '../hooks/useChat'
 import { MessageBubble } from './MessageBubble'
 import clsx from 'clsx'

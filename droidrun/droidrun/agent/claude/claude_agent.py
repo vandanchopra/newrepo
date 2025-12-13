@@ -18,12 +18,21 @@ import os
 import time
 from pathlib import Path
 
-from droidrun.agent.claude.streaming import (
-    AsyncStreamingHandler,
-    StreamEvent,
-    StreamEventType,
-    StreamingHandler,
-)
+try:
+    from .streaming import (
+        AsyncStreamingHandler,
+        StreamEvent,
+        StreamEventType,
+        StreamingHandler,
+    )
+except ImportError:
+    # Fallback for standalone testing
+    from streaming import (
+        AsyncStreamingHandler,
+        StreamEvent,
+        StreamEventType,
+        StreamingHandler,
+    )
 
 logger = logging.getLogger("droidrun.claude")
 

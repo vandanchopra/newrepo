@@ -61,6 +61,7 @@ from droidrun.config_manager.config_manager import (
     DeviceConfig,
     DroidrunConfig,
     LoggingConfig,
+    MemoryConfig,
     TelemetryConfig,
     ToolsConfig,
     TracingConfig,
@@ -77,6 +78,16 @@ from droidrun.agent.utils.tracing_setup import (
     record_langfuse_screenshot,
 )
 from opentelemetry import trace
+
+# Optional memory system integration
+try:
+    from droidrun.agent.memory import MemoryManager, MemoryConfig as MemoryManagerConfig, EpisodeRecord
+    MEMORY_AVAILABLE = True
+except ImportError:
+    MEMORY_AVAILABLE = False
+    MemoryManager = None
+    MemoryManagerConfig = None
+    EpisodeRecord = None
 
 if TYPE_CHECKING:
     from droidrun.tools import Tools
@@ -201,9 +212,28 @@ class DroidAgent(Workflow):
             telemetry=config.telemetry if config else TelemetryConfig(),
             llm_profiles=config.llm_profiles if config else {},
             credentials=config.credentials if config else CredentialsConfig(),
+            memory=config.memory if config else MemoryConfig(),
         )
 
         self.tools_instance = None
+
+        # Initialize memory system if enabled and available
+        self.memory_manager = None
+        if MEMORY_AVAILABLE and self.config.memory.enabled:
+            try:
+                mem_config = MemoryManagerConfig(
+                    store_type=self.config.memory.store_type,
+                    collection_name=self.config.memory.collection_name,
+                    similarity_threshold=self.config.memory.similarity_threshold,
+                    qdrant_host=self.config.memory.qdrant_host,
+                    qdrant_port=self.config.memory.qdrant_port,
+                    qdrant_url=self.config.memory.qdrant_url,
+                    qdrant_api_key=self.config.memory.qdrant_api_key,
+                )
+                self.memory_manager = MemoryManager(config=mem_config)
+                logger.info("🧠 Memory system initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize memory system: {e}")
 
         super().__init__(*args, timeout=timeout, **kwargs)
 
@@ -1005,3 +1035,99 @@ class DroidAgent(Workflow):
                 self.trajectory.ui_states.append(ev.ui_state)
             else:
                 self.trajectory.events.append(ev)
+
+    # ---- Memory System Methods ----
+
+    async def recall_memory_context(self, task: str, goal: str = None) -> str:
+        """
+        Recall relevant past experiences for the current task.
+
+        Args:
+            task: The current task description
+            goal: Optional goal description
+
+        Returns:
+            Context string with relevant past experiences, or empty string if memory not available
+        """
+        if not self.memory_manager:
+            return ""
+
+        try:
+            context = await self.memory_manager.get_context_for_task(
+                task=task,
+                goal=goal or task,
+                max_results=self.config.memory.max_recalled_episodes,
+            )
+            if context:
+                logger.debug(f"📚 Recalled memory context for task: {task[:50]}...")
+            return context
+        except Exception as e:
+            logger.warning(f"Failed to recall memory context: {e}")
+            return ""
+
+    async def store_episode(
+        self,
+        task: str,
+        goal: str,
+        success: bool,
+        reason: str,
+        steps: int,
+        actions: list = None,
+        learned_patterns: list = None,
+        errors: list = None,
+        tags: list = None,
+    ) -> str:
+        """
+        Store a completed episode in memory.
+
+        Args:
+            task: Task that was executed
+            goal: Goal of the task
+            success: Whether the task succeeded
+            reason: Reason for success/failure
+            steps: Number of steps taken
+            actions: List of actions performed
+            learned_patterns: Patterns learned during execution
+            errors: Errors encountered
+            tags: Tags for categorization
+
+        Returns:
+            Episode ID if stored, or empty string if memory not available
+        """
+        if not self.memory_manager or not MEMORY_AVAILABLE or not EpisodeRecord:
+            return ""
+
+        try:
+            episode = EpisodeRecord(
+                task=task,
+                goal=goal,
+                final_success=success,
+                final_reason=reason,
+                steps=steps,
+                actions=actions or [],
+                learned_patterns=learned_patterns or [],
+                errors=errors or [],
+                tags=tags or [],
+            )
+            episode_id = await self.memory_manager.store_episode(episode)
+            logger.info(f"💾 Stored episode: {task[:50]}... (success={success})")
+            return episode_id
+        except Exception as e:
+            logger.warning(f"Failed to store episode: {e}")
+            return ""
+
+    async def get_memory_statistics(self) -> dict:
+        """
+        Get statistics about the memory system.
+
+        Returns:
+            Dictionary with memory statistics, or empty dict if memory not available
+        """
+        if not self.memory_manager:
+            return {}
+
+        try:
+            return await self.memory_manager.get_statistics()
+        except Exception as e:
+            logger.warning(f"Failed to get memory statistics: {e}")
+            return {}

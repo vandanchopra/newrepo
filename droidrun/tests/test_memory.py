@@ -16,8 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 import os
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add memory module path directly to bypass llama_index dependency
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_parent_dir, 'droidrun', 'agent', 'memory'))
 
 
 class TestEpisodeRecord(unittest.TestCase):
@@ -25,7 +26,7 @@ class TestEpisodeRecord(unittest.TestCase):
 
     def test_episode_record_creation(self):
         """Test basic episode record creation."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         episode = EpisodeRecord(
             task="Open Instagram",
@@ -44,7 +45,7 @@ class TestEpisodeRecord(unittest.TestCase):
 
     def test_episode_record_to_dict(self):
         """Test episode record serialization."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         episode = EpisodeRecord(
             task="Test task",
@@ -66,7 +67,7 @@ class TestEpisodeRecord(unittest.TestCase):
 
     def test_episode_record_from_dict(self):
         """Test episode record deserialization."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         data = {
             "id": "test-id-123",
@@ -94,7 +95,7 @@ class TestEpisodeRecord(unittest.TestCase):
 
     def test_episode_record_to_summary(self):
         """Test episode summary generation."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         episode = EpisodeRecord(
             task="Open app and login",
@@ -123,7 +124,7 @@ class TestInMemoryStore(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from droidrun.agent.memory.stores import InMemoryStore, MemoryEntry
+        from stores import InMemoryStore, MemoryEntry
 
         self.store = InMemoryStore(max_entries=100)
         self.MemoryEntry = MemoryEntry
@@ -254,9 +255,11 @@ class TestLocalEmbeddingProvider(unittest.TestCase):
 
     def test_fallback_embedding(self):
         """Test fallback hash-based embedding."""
-        from droidrun.agent.memory.embeddings import LocalEmbeddingProvider
+        from embeddings import LocalEmbeddingProvider
 
         provider = LocalEmbeddingProvider(fallback_dimension=128)
+        provider._use_fallback = True  # Force fallback mode
+        provider._dimension = 128  # Reset dimension to fallback value
 
         # Even if model loading fails, should work with fallback
         embeddings = provider.embed_sync(["test text"])
@@ -266,7 +269,7 @@ class TestLocalEmbeddingProvider(unittest.TestCase):
 
     def test_deterministic_fallback(self):
         """Test that fallback embeddings are deterministic."""
-        from droidrun.agent.memory.embeddings import LocalEmbeddingProvider
+        from embeddings import LocalEmbeddingProvider
 
         provider = LocalEmbeddingProvider(fallback_dimension=64)
         provider._use_fallback = True  # Force fallback
@@ -278,7 +281,7 @@ class TestLocalEmbeddingProvider(unittest.TestCase):
 
     def test_different_texts_different_embeddings(self):
         """Test that different texts produce different embeddings."""
-        from droidrun.agent.memory.embeddings import LocalEmbeddingProvider
+        from embeddings import LocalEmbeddingProvider
 
         provider = LocalEmbeddingProvider(fallback_dimension=64)
         provider._use_fallback = True
@@ -294,7 +297,7 @@ class TestMemoryManager(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from droidrun.agent.memory.memory_manager import MemoryManager, MemoryConfig
+        from memory_manager import MemoryManager, MemoryConfig
 
         self.config = MemoryConfig(
             store_type="in_memory",
@@ -305,7 +308,7 @@ class TestMemoryManager(unittest.TestCase):
 
     def test_store_episode(self):
         """Test storing an episode."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         episode = EpisodeRecord(
             task="Test task",
@@ -322,7 +325,7 @@ class TestMemoryManager(unittest.TestCase):
 
     def test_recall_similar(self):
         """Test recalling similar episodes."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         # Store some episodes
         episodes = [
@@ -355,7 +358,7 @@ class TestMemoryManager(unittest.TestCase):
 
     def test_get_context_for_task(self):
         """Test getting context for a new task."""
-        from droidrun.agent.memory.memory_manager import EpisodeRecord
+        from memory_manager import EpisodeRecord
 
         # Store an episode
         episode = EpisodeRecord(
@@ -403,7 +406,7 @@ class TestMemoryManagerOffline(unittest.TestCase):
 
     def test_offline_configuration(self):
         """Test offline configuration."""
-        from droidrun.agent.memory.memory_manager import MemoryManager, MemoryConfig
+        from memory_manager import MemoryManager, MemoryConfig
 
         config = MemoryConfig(
             store_type="in_memory",

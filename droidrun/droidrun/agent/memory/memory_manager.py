@@ -16,15 +16,27 @@ import json
 import logging
 import uuid
 
-from droidrun.agent.memory.stores import (
-    BaseMemoryStore,
-    InMemoryStore,
-    MemoryEntry,
-)
-from droidrun.agent.memory.embeddings import (
-    EmbeddingProvider,
-    LocalEmbeddingProvider,
-)
+try:
+    from .stores import (
+        BaseMemoryStore,
+        InMemoryStore,
+        MemoryEntry,
+    )
+    from .embeddings import (
+        EmbeddingProvider,
+        LocalEmbeddingProvider,
+    )
+except ImportError:
+    # Fallback for standalone testing
+    from stores import (
+        BaseMemoryStore,
+        InMemoryStore,
+        MemoryEntry,
+    )
+    from embeddings import (
+        EmbeddingProvider,
+        LocalEmbeddingProvider,
+    )
 
 logger = logging.getLogger("droidrun.memory")
 
@@ -168,7 +180,10 @@ class MemoryManager:
         if store:
             self._store = store
         elif self.config.store_type == "qdrant":
-            from droidrun.agent.memory.stores import QdrantMemoryStore
+            try:
+                from .stores import QdrantMemoryStore
+            except ImportError:
+                from stores import QdrantMemoryStore
             self._store = QdrantMemoryStore(
                 collection_name=self.config.collection_name,
                 host=self.config.qdrant_host,
