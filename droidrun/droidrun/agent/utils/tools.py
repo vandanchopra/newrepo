@@ -659,10 +659,65 @@ async def build_app_handler_tools() -> dict:
             "function": _browser_extract_content,
         }
 
-        logger.info(f"Added {len(tools)} app handler tools")
+        logger.info(f"Added {len(tools)} app handler tools (Termux + Browser)")
 
     except ImportError as e:
         logger.debug(f"App handlers not available: {e}")
+
+    # Claude Code CLI tools (for coding tasks)
+    try:
+        from droidrun.agent.claude.claude_agent import ClaudeCodeCLI
+
+        tools["claude_code"] = {
+            "arguments": ["prompt"],
+            "description": (
+                'Execute a coding task using Claude Code CLI. '
+                'Use for writing code, explaining code, refactoring, etc. '
+                'Usage: {"action": "claude_code", "prompt": "Write a Python function to sort a list"}'
+            ),
+            "function": _claude_code_execute,
+        }
+
+        tools["claude_code_edit"] = {
+            "arguments": ["file_path", "instruction"],
+            "description": (
+                'Edit an existing file using Claude Code. '
+                'Usage: {"action": "claude_code_edit", "file_path": "main.py", "instruction": "Add error handling"}'
+            ),
+            "function": _claude_code_edit_file,
+        }
+
+        tools["claude_code_write"] = {
+            "arguments": ["file_path", "description"],
+            "description": (
+                'Create a new file using Claude Code. '
+                'Usage: {"action": "claude_code_write", "file_path": "utils.py", "description": "Utility functions for data processing"}'
+            ),
+            "function": _claude_code_write_file,
+        }
+
+        tools["claude_code_test"] = {
+            "arguments": ["test_command"],
+            "description": (
+                'Run tests using Claude Code. Default command is pytest. '
+                'Usage: {"action": "claude_code_test", "test_command": "pytest -v"}'
+            ),
+            "function": _claude_code_run_tests,
+        }
+
+        tools["claude_code_fix"] = {
+            "arguments": ["error_message"],
+            "description": (
+                'Fix code errors using Claude Code. Provide the error message. '
+                'Usage: {"action": "claude_code_fix", "error_message": "NameError: name x is not defined"}'
+            ),
+            "function": _claude_code_fix_errors,
+        }
+
+        logger.info("Added 5 Claude Code CLI tools")
+
+    except ImportError as e:
+        logger.debug(f"Claude Code CLI not available: {e}")
 
     return tools
 
@@ -752,6 +807,91 @@ async def _browser_extract_content(tools_instance) -> str:
             return f"Content extraction failed: {content.error}"
     except Exception as e:
         return f"Browser extraction error: {e}"
+
+
+# ---- Claude Code CLI Tools ----
+# These enable the agent to invoke Claude Code for coding tasks
+
+# Global Claude CLI instance (reused for session continuity)
+_claude_cli_instance = None
+
+
+def _get_claude_cli():
+    """Get or create Claude CLI instance."""
+    global _claude_cli_instance
+    if _claude_cli_instance is None:
+        try:
+            from droidrun.agent.claude.claude_agent import create_claude_cli
+            _claude_cli_instance = create_claude_cli()
+        except ImportError:
+            return None
+    return _claude_cli_instance
+
+
+async def _claude_code_execute(tools_instance, prompt: str) -> str:
+    """Execute a coding task with Claude Code CLI."""
+    cli = _get_claude_cli()
+    if cli is None:
+        return "Claude Code CLI not available. Install with: npm install -g @anthropic-ai/claude-code"
+
+    try:
+        response = await cli.execute(prompt)
+        return f"Claude Code response:\n{response.text}"
+    except Exception as e:
+        return f"Claude Code execution error: {e}"
+
+
+async def _claude_code_edit_file(tools_instance, file_path: str, instruction: str) -> str:
+    """Edit a file using Claude Code."""
+    cli = _get_claude_cli()
+    if cli is None:
+        return "Claude Code CLI not available"
+
+    try:
+        response = await cli.edit_file(file_path, instruction)
+        return f"File edit result:\n{response.text}"
+    except Exception as e:
+        return f"Claude Code edit error: {e}"
+
+
+async def _claude_code_write_file(tools_instance, file_path: str, description: str) -> str:
+    """Create a new file using Claude Code."""
+    cli = _get_claude_cli()
+    if cli is None:
+        return "Claude Code CLI not available"
+
+    try:
+        response = await cli.write_file(file_path, description)
+        return f"File creation result:\n{response.text}"
+    except Exception as e:
+        return f"Claude Code write error: {e}"
+
+
+async def _claude_code_run_tests(tools_instance, test_command: str = "pytest") -> str:
+    """Run tests using Claude Code."""
+    cli = _get_claude_cli()
+    if cli is None:
+        return "Claude Code CLI not available"
+
+    try:
+        response = await cli.run_command(test_command, "Running tests")
+        return f"Test results:\n{response.text}"
+    except Exception as e:
+        return f"Test execution error: {e}"
+
+
+async def _claude_code_fix_errors(tools_instance, error_message: str) -> str:
+    """Ask Claude Code to fix errors in the code."""
+    cli = _get_claude_cli()
+    if cli is None:
+        return "Claude Code CLI not available"
+
+    try:
+        prompt = f"Fix the following error in the code:\n\n{error_message}\n\nAnalyze the error, find the cause, and fix it."
+        response = await cli.execute(prompt, continue_conversation=True)
+        return f"Fix attempt:\n{response.text}"
+    except Exception as e:
+        return f"Claude Code fix error: {e}"
 
 
 async def test_open_app(mock_tools, text: str) -> str:
