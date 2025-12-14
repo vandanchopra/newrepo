@@ -54,6 +54,7 @@ class DroidAgentState(BaseModel):
 
     # Memory
     memory: str = ""
+    memory_context: str = ""  # Recalled episodes from memory system
     message_history: List[Dict] = Field(default_factory=list)
 
     # Planning

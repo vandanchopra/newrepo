@@ -447,28 +447,107 @@ async def create_task(request: TaskRequest, background_tasks: BackgroundTasks):
 
 
 async def execute_task(task_id: str, request: TaskRequest):
-    """Execute task in background."""
+    """Execute task in background using real DroidAgent."""
     try:
         app_state.active_tasks[task_id]["status"] = "running"
 
-        # TODO: Implement actual DroidAgent execution
-        # For now, return mock result
-        await asyncio.sleep(2)
+        # Try to use real DroidAgent
+        try:
+            from droidrun.agent.droid import DroidAgent
+            from droidrun.config_manager.config_manager import (
+                DroidrunConfig,
+                AgentConfig,
+                DeviceConfig,
+                MemoryConfig,
+            )
 
-        app_state.active_tasks[task_id].update({
-            "status": "completed",
-            "result": {
-                "success": True,
-                "reason": f"Task '{request.goal}' completed successfully",
-            },
-            "steps": 5,
-        })
+            # Build config from request
+            config = DroidrunConfig(
+                agent=AgentConfig(
+                    max_steps=request.config.get("max_steps", 50) if request.config else 50,
+                    reasoning=request.config.get("reasoning", True) if request.config else True,
+                ),
+                device=DeviceConfig(
+                    serial=request.device_serial,
+                ) if request.device_serial else DeviceConfig(),
+                memory=MemoryConfig(
+                    enabled=app_state.memory_enabled,
+                ),
+            )
+
+            # Create and run agent
+            agent = DroidAgent(
+                instruction=request.goal,
+                config=config,
+            )
+
+            logger.info(f"🤖 Starting DroidAgent for task: {task_id}")
+            steps = 0
+
+            handler = agent.run()
+            async for event in handler.stream_events():
+                event_type = type(event).__name__
+
+                # Broadcast significant events via WebSocket
+                if event_type in ("ManagerPlanEvent", "ExecutorResultEvent", "ScreenshotEvent"):
+                    await broadcast_task_event(task_id, {
+                        "type": "agent_event",
+                        "event_type": event_type,
+                        "step": steps,
+                    })
+
+                if event_type == "ExecutorResultEvent":
+                    steps += 1
+                    app_state.active_tasks[task_id]["steps"] = steps
+
+            # Get final result
+            final_result = await handler
+
+            app_state.active_tasks[task_id].update({
+                "status": "completed",
+                "result": {
+                    "success": final_result.success,
+                    "reason": final_result.reason or "Task completed",
+                },
+                "steps": final_result.steps,
+            })
+
+            logger.info(f"✅ Task completed: {task_id} (success={final_result.success})")
+
+        except ImportError as e:
+            # DroidAgent not available (llama_index not installed)
+            logger.warning(f"DroidAgent not available: {e}. Using mock execution.")
+
+            # Fall back to mock for development
+            await asyncio.sleep(2)
+
+            app_state.active_tasks[task_id].update({
+                "status": "completed",
+                "result": {
+                    "success": True,
+                    "reason": f"[MOCK] Task '{request.goal}' completed (DroidAgent unavailable)",
+                },
+                "steps": 1,
+            })
 
     except Exception as e:
+        logger.error(f"Task execution failed: {task_id} - {e}")
         app_state.active_tasks[task_id].update({
             "status": "failed",
             "result": {"success": False, "error": str(e)},
         })
+
+
+async def broadcast_task_event(task_id: str, event: dict):
+    """Broadcast task event to connected WebSocket clients."""
+    # Find sessions subscribed to this task
+    for session_id, data in app_state.sessions.items():
+        if data.get("task_id") == task_id and session_id in app_state.websocket_connections:
+            try:
+                ws = app_state.websocket_connections[session_id]
+                await ws.send_json({"type": "task_event", "task_id": task_id, **event})
+            except Exception:
+                pass  # Connection may be closed
 
 
 @app.get("/api/tasks/{task_id}", response_model=TaskResponse)

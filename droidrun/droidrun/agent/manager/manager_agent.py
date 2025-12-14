@@ -265,6 +265,21 @@ class ManagerAgent(Workflow):
                         0, {"text": f"<memory>\n{current_memory}\n</memory>\n"}
                     )
 
+            # Add recalled episodes from memory system (past experiences)
+            memory_context = getattr(self.shared_state, 'memory_context', '').strip()
+            if memory_context:
+                if (
+                    messages[last_user_idx]["content"]
+                    and "text" in messages[last_user_idx]["content"][0]
+                ):
+                    messages[last_user_idx]["content"][0][
+                        "text"
+                    ] += f"\n<past_experiences>\n{memory_context}\n</past_experiences>\n"
+                else:
+                    messages[last_user_idx]["content"].insert(
+                        0, {"text": f"<past_experiences>\n{memory_context}\n</past_experiences>\n"}
+                    )
+
             # Add CURRENT device state to last user message (use unified state)
             current_state = self.shared_state.formatted_device_state.strip()
             if current_state:

@@ -582,3 +582,280 @@ class PrometheusMetrics:
 
 # Global metrics instance
 prometheus_metrics = PrometheusMetrics()
+
+
+class ClaudeCodeCLI:
+    """
+    Integration with Claude Code CLI for actual coding tasks.
+
+    Uses the `claude` CLI command to execute prompts and handle
+    file operations through Claude's native tool use.
+    """
+
+    def __init__(
+        self,
+        working_directory: Optional[str] = None,
+        timeout_seconds: float = 300.0,
+        print_output: bool = False,
+    ):
+        """
+        Initialize Claude Code CLI wrapper.
+
+        Args:
+            working_directory: Directory to run claude commands in
+            timeout_seconds: Maximum time to wait for response
+            print_output: Whether to print output in real-time
+        """
+        self.working_directory = working_directory or os.getcwd()
+        self.timeout_seconds = timeout_seconds
+        self.print_output = print_output
+        self._cli_available = None
+
+    async def check_cli_available(self) -> bool:
+        """
+        Check if Claude CLI is installed and available.
+
+        Returns:
+            True if claude CLI is available
+        """
+        if self._cli_available is not None:
+            return self._cli_available
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+
+            self._cli_available = proc.returncode == 0
+            if self._cli_available:
+                version = stdout.decode().strip()
+                logger.info(f"Claude CLI available: {version}")
+            return self._cli_available
+
+        except (FileNotFoundError, asyncio.TimeoutError):
+            self._cli_available = False
+            logger.warning("Claude CLI not available")
+            return False
+
+    async def execute(
+        self,
+        prompt: str,
+        continue_conversation: bool = False,
+        allowed_tools: Optional[List[str]] = None,
+        json_output: bool = True,
+    ) -> ClaudeResponse:
+        """
+        Execute a prompt using Claude Code CLI.
+
+        Args:
+            prompt: The prompt to send
+            continue_conversation: Whether to continue previous conversation
+            allowed_tools: List of tools to allow
+            json_output: Whether to request JSON output
+
+        Returns:
+            ClaudeResponse with result
+        """
+        if not await self.check_cli_available():
+            return ClaudeResponse(
+                text="[ERROR] Claude CLI is not available. Install with: npm install -g @anthropic-ai/claude-code",
+                stop_reason="error",
+            )
+
+        try:
+            # Build command
+            cmd = ["claude"]
+
+            if continue_conversation:
+                cmd.append("--continue")
+
+            if json_output:
+                cmd.extend(["--output-format", "json"])
+
+            if allowed_tools:
+                cmd.extend(["--allowedTools", ",".join(allowed_tools)])
+
+            # Add the prompt via --print flag for non-interactive execution
+            cmd.extend(["--print", prompt])
+
+            logger.info(f"Executing Claude CLI: {' '.join(cmd[:3])}...")
+
+            # Execute
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.working_directory,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=self.timeout_seconds,
+            )
+
+            output = stdout.decode()
+            error = stderr.decode()
+
+            if self.print_output:
+                print(output)
+
+            if proc.returncode != 0:
+                return ClaudeResponse(
+                    text=f"[ERROR] Claude CLI failed: {error or output}",
+                    stop_reason="error",
+                )
+
+            # Parse response
+            return self._parse_cli_output(output, json_output)
+
+        except asyncio.TimeoutError:
+            return ClaudeResponse(
+                text=f"[ERROR] Claude CLI timed out after {self.timeout_seconds}s",
+                stop_reason="timeout",
+            )
+
+        except Exception as e:
+            return ClaudeResponse(
+                text=f"[ERROR] Claude CLI execution failed: {e}",
+                stop_reason="error",
+            )
+
+    def _parse_cli_output(self, output: str, is_json: bool) -> ClaudeResponse:
+        """Parse output from Claude CLI."""
+        if is_json:
+            try:
+                data = json.loads(output)
+
+                # Extract text from response
+                text = ""
+                tool_calls = []
+                thinking = ""
+
+                if isinstance(data, dict):
+                    # Handle JSON output format
+                    text = data.get("result", data.get("response", str(data)))
+                    tool_calls = data.get("tool_calls", [])
+                    thinking = data.get("thinking", "")
+
+                elif isinstance(data, list):
+                    # Handle streaming JSON blocks
+                    for item in data:
+                        if item.get("type") == "text":
+                            text += item.get("text", "")
+                        elif item.get("type") == "tool_use":
+                            tool_calls.append(item)
+
+                return ClaudeResponse(
+                    text=text,
+                    thinking=thinking,
+                    tool_calls=tool_calls,
+                    stop_reason="end_turn",
+                    raw_response=data,
+                )
+
+            except json.JSONDecodeError:
+                # Fall back to text output
+                return ClaudeResponse(
+                    text=output,
+                    stop_reason="end_turn",
+                )
+        else:
+            return ClaudeResponse(
+                text=output,
+                stop_reason="end_turn",
+            )
+
+    async def edit_file(
+        self,
+        file_path: str,
+        instruction: str,
+    ) -> ClaudeResponse:
+        """
+        Edit a file using Claude.
+
+        Args:
+            file_path: Path to the file to edit
+            instruction: What changes to make
+
+        Returns:
+            ClaudeResponse with result
+        """
+        prompt = f"Edit the file {file_path}: {instruction}"
+        return await self.execute(prompt, allowed_tools=["Edit", "Read"])
+
+    async def write_file(
+        self,
+        file_path: str,
+        description: str,
+    ) -> ClaudeResponse:
+        """
+        Write a new file using Claude.
+
+        Args:
+            file_path: Path for the new file
+            description: What the file should contain
+
+        Returns:
+            ClaudeResponse with result
+        """
+        prompt = f"Create a new file at {file_path} with the following content: {description}"
+        return await self.execute(prompt, allowed_tools=["Write"])
+
+    async def run_command(
+        self,
+        command: str,
+        description: str = "",
+    ) -> ClaudeResponse:
+        """
+        Run a shell command using Claude.
+
+        Args:
+            command: Command to run
+            description: Context for why
+
+        Returns:
+            ClaudeResponse with result
+        """
+        prompt = f"Run this command: {command}"
+        if description:
+            prompt += f" ({description})"
+        return await self.execute(prompt, allowed_tools=["Bash"])
+
+    async def code_review(
+        self,
+        file_path: str,
+    ) -> ClaudeResponse:
+        """
+        Review code in a file.
+
+        Args:
+            file_path: Path to the file to review
+
+        Returns:
+            ClaudeResponse with review
+        """
+        prompt = f"Review the code in {file_path} and suggest improvements."
+        return await self.execute(prompt, allowed_tools=["Read"])
+
+
+def create_claude_cli(
+    working_directory: Optional[str] = None,
+    timeout_seconds: float = 300.0,
+) -> ClaudeCodeCLI:
+    """
+    Create a Claude Code CLI instance.
+
+    Args:
+        working_directory: Directory to run claude commands in
+        timeout_seconds: Maximum time to wait
+
+    Returns:
+        ClaudeCodeCLI instance
+    """
+    return ClaudeCodeCLI(
+        working_directory=working_directory,
+        timeout_seconds=timeout_seconds,
+    )

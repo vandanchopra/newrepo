@@ -480,6 +480,21 @@ class DroidAgent(Workflow):
         )
         ctx.write_event_to_stream(ev)
 
+        # Recall relevant past experiences from memory
+        if self.memory_manager and self.config.memory and self.config.memory.enabled:
+            memory_context = await self.recall_memory_context(
+                task=self.shared_state.instruction,
+                goal=self.shared_state.instruction,
+            )
+            if memory_context:
+                logger.info("📚 Memory context recalled - incorporating past experiences")
+                # Store memory context in shared state for manager/executor to use
+                self.shared_state.memory_context = memory_context
+            else:
+                self.shared_state.memory_context = ""
+        else:
+            self.shared_state.memory_context = ""
+
         await self.trajectory_writer.start()
 
         # Build and filter tools (single source of truth for tool filtering)
@@ -1019,6 +1034,36 @@ class DroidAgent(Workflow):
             logger.info(f"📁 Trajectory saved: {self.trajectory.trajectory_folder}")
 
         self.tools_instance._set_context(None)
+
+        # Store episode in memory for future recall
+        if self.memory_manager and self.config.memory and self.config.memory.enabled:
+            # Extract actions from trajectory
+            actions = [
+                {
+                    "action": getattr(ev, 'action', str(ev)),
+                    "step": i,
+                }
+                for i, ev in enumerate(self.trajectory.events)
+                if hasattr(ev, 'action') or hasattr(ev, '__class__')
+            ][:20]  # Limit to last 20 actions
+
+            # Extract any error descriptions
+            errors = [
+                err for err in self.shared_state.error_descriptions
+                if err
+            ][:5]  # Limit to last 5 errors
+
+            await self.store_episode(
+                task=self.shared_state.instruction,
+                goal=self.shared_state.instruction,
+                success=ev.success,
+                reason=ev.reason or "",
+                steps=self.shared_state.step_number,
+                actions=actions,
+                learned_patterns=[],  # Could be populated by agent analysis
+                errors=errors,
+                tags=[self.shared_state.current_package_name] if self.shared_state.current_package_name else [],
+            )
 
         return result
 

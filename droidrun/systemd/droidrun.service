@@ -1,0 +1,41 @@
+[Unit]
+Description=DroidRun Autonomous Agent Daemon
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=droidrun
+Group=droidrun
+WorkingDirectory=/opt/droidrun
+Environment="PATH=/opt/droidrun/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+
+# Main daemon command
+ExecStart=/opt/droidrun/venv/bin/python -m droidrun.daemon \
+    --log-level INFO \
+    --log-file /var/log/droidrun/daemon.log \
+    --task-file /var/lib/droidrun/tasks.json
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Resource limits
+MemoryMax=2G
+CPUQuota=100%
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/droidrun /var/log/droidrun
+
+# ADB access (required for device control)
+SupplementaryGroups=plugdev
+
+[Install]
+WantedBy=multi-user.target

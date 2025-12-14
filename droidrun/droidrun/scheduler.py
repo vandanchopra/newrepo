@@ -513,3 +513,162 @@ def create_scheduler(
         max_concurrent_tasks=max_concurrent,
     )
     return TaskScheduler(config=config, task_executor=task_executor)
+
+
+class DroidAgentExecutor:
+    """
+    Executor that runs scheduled tasks using DroidAgent.
+
+    This bridges the scheduler with actual device control.
+    """
+
+    def __init__(
+        self,
+        device_serial: Optional[str] = None,
+        llm_provider: str = "anthropic",
+        model_name: Optional[str] = None,
+        max_steps: int = 50,
+        reasoning: bool = True,
+        memory_enabled: bool = True,
+    ):
+        """
+        Initialize the DroidAgent executor.
+
+        Args:
+            device_serial: Android device serial (or None for auto-detect)
+            llm_provider: LLM provider to use
+            model_name: Model name (optional, uses provider default)
+            max_steps: Maximum steps per task
+            reasoning: Whether to use Manager/Executor reasoning mode
+            memory_enabled: Whether to enable memory system
+        """
+        self.device_serial = device_serial
+        self.llm_provider = llm_provider
+        self.model_name = model_name
+        self.max_steps = max_steps
+        self.reasoning = reasoning
+        self.memory_enabled = memory_enabled
+        self._agent = None
+
+    async def __call__(self, task: ScheduledTask) -> Dict[str, Any]:
+        """
+        Execute a scheduled task using DroidAgent.
+
+        Args:
+            task: The scheduled task to execute
+
+        Returns:
+            Dictionary with execution results
+        """
+        try:
+            # Import DroidAgent lazily to avoid circular imports
+            from droidrun.agent.droid import DroidAgent
+            from droidrun.config_manager.config_manager import (
+                DroidrunConfig,
+                AgentConfig,
+                DeviceConfig,
+                MemoryConfig,
+            )
+
+            # Build config from task
+            config = DroidrunConfig(
+                agent=AgentConfig(
+                    max_steps=task.config.get("max_steps", self.max_steps),
+                    reasoning=task.config.get("reasoning", self.reasoning),
+                ),
+                device=DeviceConfig(
+                    serial=task.config.get("device_serial", self.device_serial),
+                ),
+                memory=MemoryConfig(
+                    enabled=task.config.get("memory_enabled", self.memory_enabled),
+                ),
+            )
+
+            # Create agent
+            agent = DroidAgent(
+                instruction=task.goal,
+                config=config,
+            )
+
+            # Run the agent
+            logger.info(f"🤖 Starting DroidAgent for task: {task.goal[:50]}...")
+
+            result = {"success": False, "reason": "", "steps": 0}
+
+            handler = agent.run()
+            async for event in handler.stream_events():
+                # Log significant events
+                event_type = type(event).__name__
+                if event_type in ("ManagerPlanEvent", "ExecutorResultEvent", "FinalizeEvent"):
+                    logger.debug(f"  Event: {event_type}")
+
+            # Get final result
+            final_result = await handler
+
+            result = {
+                "success": final_result.success,
+                "reason": final_result.reason or "",
+                "steps": final_result.steps,
+            }
+
+            logger.info(
+                f"🏁 DroidAgent completed: success={result['success']}, "
+                f"steps={result['steps']}"
+            )
+
+            return result
+
+        except ImportError as e:
+            logger.error(f"DroidAgent not available: {e}")
+            return {
+                "success": False,
+                "reason": f"DroidAgent not available: {e}",
+                "steps": 0,
+            }
+
+        except Exception as e:
+            logger.error(f"DroidAgent execution failed: {e}")
+            raise  # Let scheduler handle retry logic
+
+
+def create_droid_scheduler(
+    device_serial: Optional[str] = None,
+    llm_provider: str = "anthropic",
+    model_name: Optional[str] = None,
+    max_steps: int = 50,
+    storage_path: str = "scheduler_tasks.json",
+    max_concurrent: int = 1,
+    memory_enabled: bool = True,
+) -> TaskScheduler:
+    """
+    Create a scheduler configured with DroidAgent executor.
+
+    This is the main entry point for autonomous task scheduling.
+
+    Args:
+        device_serial: Android device serial
+        llm_provider: LLM provider to use
+        model_name: Model name
+        max_steps: Maximum steps per task
+        storage_path: Path for task persistence
+        max_concurrent: Maximum concurrent tasks
+        memory_enabled: Whether to enable memory
+
+    Returns:
+        TaskScheduler configured with DroidAgentExecutor
+    """
+    executor = DroidAgentExecutor(
+        device_serial=device_serial,
+        llm_provider=llm_provider,
+        model_name=model_name,
+        max_steps=max_steps,
+        memory_enabled=memory_enabled,
+    )
+
+    config = SchedulerConfig(
+        enabled=True,
+        storage_path=storage_path,
+        max_concurrent_tasks=max_concurrent,
+    )
+
+    return TaskScheduler(config=config, task_executor=executor)
