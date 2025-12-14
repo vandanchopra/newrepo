@@ -30,10 +30,10 @@ class TestCheckpointConfig(unittest.TestCase):
 
         config = CheckpointConfig()
 
-        self.assertFalse(config.enabled)
+        self.assertTrue(config.enabled)  # Now enabled by default for autonomy
         self.assertEqual(config.checkpoint_dir, "checkpoints")
         self.assertEqual(config.checkpoint_interval_seconds, 30.0)
-        self.assertEqual(config.max_checkpoints, 5)
+        self.assertEqual(config.max_checkpoints, 10)  # Increased for better recovery
         self.assertTrue(config.auto_resume)
 
     def test_custom_config(self):

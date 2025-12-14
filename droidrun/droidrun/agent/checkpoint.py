@@ -26,12 +26,15 @@ logger = logging.getLogger("droidrun.checkpoint")
 class CheckpointConfig:
     """Configuration for state checkpointing."""
 
-    enabled: bool = False
+    enabled: bool = True  # ENABLED by default for long-running autonomy
     checkpoint_dir: str = "checkpoints"
     checkpoint_interval_seconds: float = 30.0
-    max_checkpoints: int = 5
+    max_checkpoints: int = 10  # Keep more checkpoints for recovery
     auto_resume: bool = True
     compress: bool = False
+    # New: Track in-flight task for crash recovery
+    save_in_flight_task: bool = True
+    in_flight_task_file: str = "in_flight_task.json"
 
 
 @dataclass
@@ -360,6 +363,134 @@ class CheckpointManager:
             "max_checkpoints": self.config.max_checkpoints,
             "checkpoint_interval_seconds": self.config.checkpoint_interval_seconds,
         }
+
+    # ---- In-Flight Task Tracking for Crash Recovery ----
+
+    def _get_in_flight_path(self) -> Path:
+        """Get path to in-flight task file."""
+        return self.checkpoint_dir / self.config.in_flight_task_file
+
+    async def save_in_flight_task(
+        self,
+        task_id: str,
+        goal: str,
+        started_at: float,
+        current_step: int = 0,
+        last_action: str = "",
+        progress_percent: float = 0.0,
+        metadata: Dict[str, Any] = None,
+    ) -> bool:
+        """
+        Save information about a currently executing task.
+
+        This allows recovery after daemon crash - we know what was
+        running and can decide whether to retry or skip.
+
+        Args:
+            task_id: Unique task identifier
+            goal: Task goal/instruction
+            started_at: Unix timestamp when task started
+            current_step: Current step number
+            last_action: Description of last action taken
+            progress_percent: Estimated progress (0-100)
+            metadata: Additional task metadata
+
+        Returns:
+            True if saved successfully
+        """
+        if not self.config.save_in_flight_task:
+            return False
+
+        in_flight_data = {
+            "task_id": task_id,
+            "goal": goal,
+            "started_at": started_at,
+            "current_step": current_step,
+            "last_action": last_action,
+            "progress_percent": progress_percent,
+            "last_heartbeat": time.time(),
+            "metadata": metadata or {},
+        }
+
+        try:
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            in_flight_path = self._get_in_flight_path()
+
+            with open(in_flight_path, "w", encoding="utf-8") as f:
+                json.dump(in_flight_data, f, indent=2)
+
+            return True
+
+        except Exception as e:
+            logger.warning(f"Failed to save in-flight task: {e}")
+            return False
+
+    async def get_in_flight_task(self) -> Optional[Dict[str, Any]]:
+        """
+        Get information about any in-flight task from before crash.
+
+        Returns:
+            In-flight task data if exists, None otherwise
+        """
+        in_flight_path = self._get_in_flight_path()
+
+        if not in_flight_path.exists():
+            return None
+
+        try:
+            with open(in_flight_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load in-flight task: {e}")
+            return None
+
+    async def clear_in_flight_task(self) -> bool:
+        """
+        Clear in-flight task marker (call when task completes).
+
+        Returns:
+            True if cleared, False if no marker existed
+        """
+        in_flight_path = self._get_in_flight_path()
+
+        if in_flight_path.exists():
+            in_flight_path.unlink()
+            logger.debug("Cleared in-flight task marker")
+            return True
+
+        return False
+
+    async def is_task_stale(
+        self,
+        max_age_seconds: float = 3600.0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Check if there's a stale in-flight task (likely from crash).
+
+        A task is stale if its last heartbeat is older than max_age_seconds.
+
+        Args:
+            max_age_seconds: Maximum age before task is considered stale
+
+        Returns:
+            Stale task data if found, None otherwise
+        """
+        task_data = await self.get_in_flight_task()
+
+        if task_data is None:
+            return None
+
+        last_heartbeat = task_data.get("last_heartbeat", 0)
+        age = time.time() - last_heartbeat
+
+        if age > max_age_seconds:
+            logger.warning(
+                f"Found stale in-flight task: {task_data.get('task_id')} "
+                f"(age: {age:.0f}s, max: {max_age_seconds}s)"
+            )
+            return task_data
+
+        return None
 
 
 # Convenience function for creating a checkpoint manager

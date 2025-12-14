@@ -64,6 +64,18 @@ class ScheduledTask:
     tags: List[str] = field(default_factory=list)
     cron_expression: Optional[str] = None  # For recurring tasks
 
+    # NEW: Execution timeout and progress tracking
+    execution_timeout_seconds: float = 3600.0  # 1 hour default
+    last_heartbeat: Optional[float] = None
+    progress_percent: float = 0.0
+    current_step: int = 0
+    last_action: str = ""
+
+    # NEW: Task dependencies for multi-day goals
+    depends_on: List[str] = field(default_factory=list)  # Task IDs this depends on
+    parent_task_id: Optional[str] = None  # If this is a subtask
+    subtask_ids: List[str] = field(default_factory=list)  # Child tasks
+
     def __lt__(self, other: "ScheduledTask") -> bool:
         """Compare for priority queue (higher priority first, then earlier time)."""
         if self.priority != other.priority:
@@ -81,6 +93,21 @@ class ScheduledTask:
 
 
 @dataclass
+class NotificationConfig:
+    """Configuration for task notifications."""
+
+    enabled: bool = False
+    webhook_url: Optional[str] = None  # HTTP webhook for notifications
+    notify_on_failure: bool = True
+    notify_on_success: bool = False
+    notify_on_timeout: bool = True
+    notify_on_max_retries: bool = True
+    # Escalation settings
+    escalation_after_failures: int = 3  # Escalate after N consecutive failures
+    escalation_webhook_url: Optional[str] = None  # Different webhook for escalation
+
+
+@dataclass
 class SchedulerConfig:
     """Configuration for the task scheduler."""
 
@@ -91,6 +118,14 @@ class SchedulerConfig:
     default_retry_delay_seconds: float = 60.0
     retry_multiplier: float = 2.0
     max_retry_delay_seconds: float = 3600.0
+
+    # NEW: Timeout and stale task detection
+    default_execution_timeout_seconds: float = 3600.0  # 1 hour
+    stale_task_check_interval_seconds: float = 300.0  # Check every 5 min
+    stale_task_timeout_seconds: float = 7200.0  # 2 hours without heartbeat = stale
+
+    # NEW: Notification configuration
+    notifications: NotificationConfig = field(default_factory=NotificationConfig)
 
 
 class TaskScheduler:
@@ -488,6 +523,308 @@ class TaskScheduler:
             "tasks_by_status": by_status,
             "max_concurrent_tasks": self.config.max_concurrent_tasks,
         }
+
+    # ---- Progress Tracking & Heartbeat ----
+
+    def update_task_progress(
+        self,
+        task_id: str,
+        current_step: int = None,
+        progress_percent: float = None,
+        last_action: str = None,
+    ) -> bool:
+        """
+        Update progress on a running task.
+
+        Call this periodically during task execution to:
+        1. Update heartbeat (prevents stale detection)
+        2. Track progress for monitoring
+        3. Enable resume from last known state
+
+        Args:
+            task_id: Task ID to update
+            current_step: Current step number
+            progress_percent: Progress 0-100
+            last_action: Description of last action
+
+        Returns:
+            True if updated, False if task not found
+        """
+        task = self._tasks_by_id.get(task_id)
+        if not task:
+            return False
+
+        task.last_heartbeat = time.time()
+
+        if current_step is not None:
+            task.current_step = current_step
+        if progress_percent is not None:
+            task.progress_percent = min(100.0, max(0.0, progress_percent))
+        if last_action is not None:
+            task.last_action = last_action
+
+        self._save_tasks()
+        return True
+
+    async def check_stale_tasks(self) -> List[ScheduledTask]:
+        """
+        Find and handle stale tasks (running but no heartbeat).
+
+        A task is stale if:
+        - Status is RUNNING
+        - last_heartbeat is older than stale_task_timeout_seconds
+        - OR started_at + execution_timeout_seconds has passed
+
+        Returns:
+            List of stale tasks found
+        """
+        stale_tasks = []
+        current_time = time.time()
+
+        for task in self._tasks_by_id.values():
+            if task.status != TaskStatus.RUNNING.value:
+                continue
+
+            # Check heartbeat timeout
+            heartbeat_time = task.last_heartbeat or task.started_at or 0
+            heartbeat_age = current_time - heartbeat_time
+
+            # Check execution timeout
+            started = task.started_at or current_time
+            execution_time = current_time - started
+
+            is_stale = (
+                heartbeat_age > self.config.stale_task_timeout_seconds or
+                execution_time > task.execution_timeout_seconds
+            )
+
+            if is_stale:
+                stale_tasks.append(task)
+                logger.warning(
+                    f"⚠️ Stale task detected: {task.task_id} "
+                    f"(heartbeat_age: {heartbeat_age:.0f}s, "
+                    f"execution_time: {execution_time:.0f}s)"
+                )
+
+                # Mark as failed due to timeout
+                task.status = TaskStatus.FAILED.value
+                task.completed_at = current_time
+                task.error = f"Task timed out (heartbeat: {heartbeat_age:.0f}s, execution: {execution_time:.0f}s)"
+
+                # Send notification
+                await self._send_notification(
+                    task=task,
+                    event_type="timeout",
+                    message=f"Task timed out: {task.goal[:50]}",
+                )
+
+        if stale_tasks:
+            self._save_tasks()
+
+        return stale_tasks
+
+    # ---- Notification System ----
+
+    async def _send_notification(
+        self,
+        task: ScheduledTask,
+        event_type: str,
+        message: str,
+        escalate: bool = False,
+    ) -> bool:
+        """
+        Send notification about task event.
+
+        Args:
+            task: The task this notification is about
+            event_type: Type of event (failure, success, timeout, escalation)
+            message: Human-readable message
+            escalate: Whether this is an escalation
+
+        Returns:
+            True if notification sent successfully
+        """
+        notif_config = self.config.notifications
+        if not notif_config.enabled:
+            return False
+
+        # Determine if we should send based on event type
+        should_send = (
+            (event_type == "failure" and notif_config.notify_on_failure) or
+            (event_type == "success" and notif_config.notify_on_success) or
+            (event_type == "timeout" and notif_config.notify_on_timeout) or
+            (event_type == "max_retries" and notif_config.notify_on_max_retries) or
+            escalate
+        )
+
+        if not should_send:
+            return False
+
+        # Choose webhook URL
+        webhook_url = (
+            notif_config.escalation_webhook_url if escalate
+            else notif_config.webhook_url
+        )
+
+        if not webhook_url:
+            logger.debug(f"No webhook URL configured for {event_type}")
+            return False
+
+        # Build notification payload
+        payload = {
+            "event_type": event_type,
+            "escalation": escalate,
+            "timestamp": time.time(),
+            "message": message,
+            "task": {
+                "task_id": task.task_id,
+                "goal": task.goal,
+                "status": task.status,
+                "priority": task.priority,
+                "retry_count": task.retry_count,
+                "progress_percent": task.progress_percent,
+                "current_step": task.current_step,
+                "last_action": task.last_action,
+                "error": task.error,
+            },
+        }
+
+        try:
+            import aiohttp
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    webhook_url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"📤 Notification sent: {event_type}")
+                        return True
+                    else:
+                        logger.warning(
+                            f"Notification failed: {response.status}"
+                        )
+                        return False
+
+        except ImportError:
+            logger.warning("aiohttp not installed, notifications disabled")
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to send notification: {e}")
+            return False
+
+    # ---- Task Dependencies ----
+
+    def schedule_dependent_task(
+        self,
+        goal: str,
+        depends_on: List[str],
+        priority: TaskPriority = TaskPriority.NORMAL,
+        **kwargs,
+    ) -> str:
+        """
+        Schedule a task that depends on other tasks completing.
+
+        The task will only execute after all dependencies have
+        completed successfully.
+
+        Args:
+            goal: Task goal
+            depends_on: List of task IDs this task depends on
+            priority: Task priority
+            **kwargs: Additional arguments passed to schedule_task
+
+        Returns:
+            Task ID
+        """
+        task_id = self.schedule_task(
+            goal=goal,
+            priority=priority,
+            **kwargs,
+        )
+
+        # Set dependencies
+        task = self._tasks_by_id[task_id]
+        task.depends_on = list(depends_on)
+        self._save_tasks()
+
+        logger.info(
+            f"📋 Task {task_id} scheduled with {len(depends_on)} dependencies"
+        )
+
+        return task_id
+
+    def are_dependencies_met(self, task_id: str) -> bool:
+        """
+        Check if all dependencies for a task are satisfied.
+
+        Args:
+            task_id: Task to check
+
+        Returns:
+            True if all dependencies completed successfully
+        """
+        task = self._tasks_by_id.get(task_id)
+        if not task or not task.depends_on:
+            return True
+
+        for dep_id in task.depends_on:
+            dep_task = self._tasks_by_id.get(dep_id)
+            if not dep_task:
+                logger.warning(f"Dependency {dep_id} not found")
+                return False
+
+            if dep_task.status != TaskStatus.COMPLETED.value:
+                return False
+
+        return True
+
+    def create_task_chain(
+        self,
+        goals: List[str],
+        base_priority: TaskPriority = TaskPriority.NORMAL,
+        delay_between_seconds: float = 0,
+    ) -> List[str]:
+        """
+        Create a chain of dependent tasks for multi-day goals.
+
+        Each task depends on the previous one completing.
+
+        Args:
+            goals: List of goal strings in order
+            base_priority: Priority for the chain
+            delay_between_seconds: Delay between tasks
+
+        Returns:
+            List of created task IDs in order
+        """
+        task_ids = []
+        previous_id = None
+
+        for i, goal in enumerate(goals):
+            depends_on = [previous_id] if previous_id else []
+
+            task_id = self.schedule_task(
+                goal=goal,
+                priority=base_priority,
+                delay_seconds=delay_between_seconds * i,
+            )
+
+            task = self._tasks_by_id[task_id]
+            task.depends_on = depends_on
+            if previous_id:
+                parent = self._tasks_by_id[previous_id]
+                parent.subtask_ids.append(task_id)
+                task.parent_task_id = task_ids[0]  # First task is parent
+
+            task_ids.append(task_id)
+            previous_id = task_id
+
+        self._save_tasks()
+
+        logger.info(f"📋 Created task chain with {len(task_ids)} tasks")
+        return task_ids
 
 
 # Convenience function
