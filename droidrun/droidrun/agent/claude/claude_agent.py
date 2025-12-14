@@ -41,7 +41,12 @@ logger = logging.getLogger("droidrun.claude")
 class ClaudeAgentConfig:
     """Configuration for Claude Code Agent."""
 
-    # API Configuration
+    # Execution Mode: "api" (Anthropic API) or "cli" (Claude Code CLI)
+    execution_mode: str = "cli"  # Default to CLI mode (uses subscription)
+    cli_path: Optional[str] = None  # Path to claude executable
+    cli_timeout: float = 300.0  # CLI timeout in seconds
+
+    # API Configuration (only used if execution_mode="api")
     api_key: Optional[str] = None
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 8192
@@ -116,10 +121,13 @@ class ClaudeCodeAgent:
         self.config = config or ClaudeAgentConfig()
         self.on_stream_event = on_stream_event
 
-        # Initialize API client
+        # Initialize API client (for API mode)
         self._client = None
         self._async_client = None
         self._claude_md_content: Optional[str] = None
+
+        # Initialize CLI wrapper (for CLI mode)
+        self._cli_wrapper = None
 
         # Metrics
         self._request_count = 0
@@ -130,12 +138,50 @@ class ClaudeCodeAgent:
         self._initialize()
 
     def _initialize(self):
-        """Initialize the Claude client."""
+        """Initialize the Claude client based on execution mode."""
+        # CLI Mode: Use Claude Code CLI (subscription-based)
+        if self.config.execution_mode == "cli":
+            self._initialize_cli()
+            return
+
+        # API Mode: Use Anthropic API directly
+        self._initialize_api()
+
+    def _initialize_cli(self):
+        """Initialize Claude Code CLI wrapper."""
+        try:
+            from .cli_wrapper import ClaudeCodeCLI, CLIConfig
+
+            cli_config = CLIConfig(
+                cli_path=self.config.cli_path or "claude",
+                timeout_seconds=self.config.cli_timeout,
+            )
+            self._cli_wrapper = ClaudeCodeCLI(config=cli_config)
+
+            if self._cli_wrapper.is_available():
+                version = self._cli_wrapper.get_version()
+                logger.info(f"🚀 Claude Code CLI initialized (version: {version})")
+                logger.info("Using your Claude Code subscription - no API key needed!")
+            else:
+                logger.warning(
+                    "Claude Code CLI not found. Install with: npm install -g @anthropic-ai/claude-code\n"
+                    "Or set execution_mode='api' to use Anthropic API instead."
+                )
+        except ImportError as e:
+            logger.error(f"Failed to import CLI wrapper: {e}")
+
+        # Load CLAUDE.md if configured
+        if self.config.auto_load_claude_md:
+            self._load_claude_md()
+
+    def _initialize_api(self):
+        """Initialize Anthropic API client."""
         api_key = self.config.api_key or os.getenv("ANTHROPIC_API_KEY")
 
         if not api_key and not self.config.offline_mode:
             logger.warning(
-                "No ANTHROPIC_API_KEY found. Set offline_mode=True for mock responses."
+                "No ANTHROPIC_API_KEY found. Set offline_mode=True for mock responses, "
+                "or set execution_mode='cli' to use Claude Code CLI with your subscription."
             )
 
         if api_key:
@@ -143,7 +189,7 @@ class ClaudeCodeAgent:
                 import anthropic
                 self._client = anthropic.Anthropic(api_key=api_key)
                 self._async_client = anthropic.AsyncAnthropic(api_key=api_key)
-                logger.info(f"Claude client initialized with model: {self.config.model}")
+                logger.info(f"Claude API client initialized with model: {self.config.model}")
             except ImportError:
                 logger.error("anthropic package not installed. Install: pip install anthropic")
                 raise
@@ -233,6 +279,105 @@ class ClaudeCodeAgent:
             metrics={"latency_ms": 0},
         )
 
+    async def _cli_chat(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict]] = None,
+    ) -> ClaudeResponse:
+        """
+        Execute chat via Claude Code CLI.
+
+        Uses the locally installed `claude` CLI command with your subscription.
+        """
+        start_time = time.time()
+
+        if not self._cli_wrapper:
+            return ClaudeResponse(
+                text="[CLI ERROR] Claude Code CLI wrapper not initialized",
+                stop_reason="error",
+                usage={},
+                metrics={},
+            )
+
+        # Build prompt from messages
+        prompt_parts = []
+
+        # Add system prompt if configured
+        system_prompt = self._build_system_prompt()
+        if system_prompt:
+            prompt_parts.append(f"System context:\n{system_prompt}\n\n---\n")
+
+        # Add conversation history
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                prompt_parts.append(f"User: {content}\n")
+            elif role == "assistant":
+                prompt_parts.append(f"Assistant: {content}\n")
+            elif role == "system":
+                prompt_parts.append(f"System: {content}\n")
+
+        # Add tool context if provided
+        if tools:
+            tool_names = [t.get("name", "") for t in tools]
+            prompt_parts.append(f"\nAvailable tools: {', '.join(tool_names)}\n")
+
+        full_prompt = "\n".join(prompt_parts)
+
+        # Execute via CLI
+        try:
+            self._request_count += 1
+
+            cli_response = await self._cli_wrapper.execute(
+                prompt=full_prompt,
+                timeout=self.config.cli_timeout,
+            )
+
+            latency = (time.time() - start_time) * 1000
+            self._total_latency += latency
+
+            if cli_response.success:
+                logger.debug(f"CLI response received in {latency:.0f}ms")
+
+                return ClaudeResponse(
+                    text=cli_response.text,
+                    thinking="",
+                    tool_calls=[],
+                    stop_reason="end_turn",
+                    usage={
+                        "input_tokens": len(full_prompt) // 4,  # Rough estimate
+                        "output_tokens": len(cli_response.text) // 4,
+                    },
+                    metrics={
+                        "latency_ms": latency,
+                        "cli_duration_s": cli_response.duration_seconds,
+                    },
+                    raw_response=cli_response.raw_output,
+                )
+            else:
+                self._error_count += 1
+                logger.error(f"CLI execution failed: {cli_response.error}")
+
+                return ClaudeResponse(
+                    text=f"[CLI ERROR] {cli_response.error}",
+                    stop_reason="error",
+                    usage={},
+                    metrics={"latency_ms": latency},
+                )
+
+        except Exception as e:
+            self._error_count += 1
+            latency = (time.time() - start_time) * 1000
+            logger.error(f"CLI chat error: {e}")
+
+            return ClaudeResponse(
+                text=f"[CLI ERROR] {str(e)}",
+                stop_reason="error",
+                usage={},
+                metrics={"latency_ms": latency},
+            )
+
     async def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -251,6 +396,10 @@ class ClaudeCodeAgent:
             ClaudeResponse or AsyncIterator of StreamEvents if streaming
         """
         should_stream = stream if stream is not None else self.config.stream
+
+        # CLI Mode: Use Claude Code CLI
+        if self.config.execution_mode == "cli" and self._cli_wrapper:
+            return await self._cli_chat(messages, tools)
 
         # Handle offline mode
         if self.config.offline_mode or not self._async_client:

@@ -464,20 +464,20 @@ async def execute_task(task_id: str, request: TaskRequest):
             # Build config from request
             config = DroidrunConfig(
                 agent=AgentConfig(
-                    max_steps=request.config.get("max_steps", 50) if request.config else 50,
-                    reasoning=request.config.get("reasoning", True) if request.config else True,
+                    max_steps=request.max_steps,
+                    reasoning=request.reasoning,
                 ),
                 device=DeviceConfig(
                     serial=request.device_serial,
                 ) if request.device_serial else DeviceConfig(),
                 memory=MemoryConfig(
-                    enabled=app_state.memory_enabled,
+                    enabled=app_state.config.memory_enabled,
                 ),
             )
 
             # Create and run agent
             agent = DroidAgent(
-                instruction=request.goal,
+                goal=request.goal,
                 config=config,
             )
 
@@ -541,7 +541,7 @@ async def execute_task(task_id: str, request: TaskRequest):
 async def broadcast_task_event(task_id: str, event: dict):
     """Broadcast task event to connected WebSocket clients."""
     # Find sessions subscribed to this task
-    for session_id, data in app_state.sessions.items():
+    for session_id, data in app_state.active_sessions.items():
         if data.get("task_id") == task_id and session_id in app_state.websocket_connections:
             try:
                 ws = app_state.websocket_connections[session_id]

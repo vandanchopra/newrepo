@@ -92,6 +92,7 @@ packages = ["droidrun"]
 
 [project.scripts]
 droidrun = "droidrun.cli.main:cli"
+droidrun-auto = "droidrun.auto:main"
 
 [tool.ruff]
 line-length = 100

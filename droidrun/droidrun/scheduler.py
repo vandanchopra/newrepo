@@ -299,6 +299,72 @@ class TaskScheduler:
 
         return tasks[:limit]
 
+    def cleanup_old_tasks(
+        self,
+        max_completed_tasks: int = 1000,
+        max_age_days: int = 30,
+    ) -> int:
+        """
+        Clean up old completed/failed/cancelled tasks to prevent unbounded growth.
+
+        Args:
+            max_completed_tasks: Maximum completed tasks to keep
+            max_age_days: Remove tasks older than this many days
+
+        Returns:
+            Number of tasks removed
+        """
+        current_time = time.time()
+        max_age_seconds = max_age_days * 24 * 60 * 60
+        removed_count = 0
+
+        # Get all completed/failed/cancelled tasks
+        finished_statuses = {
+            TaskStatus.COMPLETED.value,
+            TaskStatus.FAILED.value,
+            TaskStatus.CANCELLED.value,
+        }
+
+        finished_tasks = [
+            (task_id, task)
+            for task_id, task in self._tasks_by_id.items()
+            if task.status in finished_statuses
+        ]
+
+        # Sort by completion time (oldest first)
+        finished_tasks.sort(
+            key=lambda x: x[1].completed_at or x[1].created_at
+        )
+
+        # Remove tasks that are too old
+        for task_id, task in finished_tasks:
+            task_time = task.completed_at or task.created_at
+            if current_time - task_time > max_age_seconds:
+                del self._tasks_by_id[task_id]
+                removed_count += 1
+
+        # Remove excess tasks (keep newest)
+        remaining_finished = [
+            (task_id, task)
+            for task_id, task in self._tasks_by_id.items()
+            if task.status in finished_statuses
+        ]
+        remaining_finished.sort(
+            key=lambda x: x[1].completed_at or x[1].created_at
+        )
+
+        if len(remaining_finished) > max_completed_tasks:
+            excess = len(remaining_finished) - max_completed_tasks
+            for task_id, _ in remaining_finished[:excess]:
+                del self._tasks_by_id[task_id]
+                removed_count += 1
+
+        if removed_count > 0:
+            self._save_tasks()
+            logger.info(f"🧹 Cleaned up {removed_count} old tasks")
+
+        return removed_count
+
     async def start(self):
         """Start the scheduler."""
         if not self.config.enabled:
@@ -344,6 +410,14 @@ class TaskScheduler:
 
         logger.info("⏹️ Task scheduler stopped")
 
+    async def execute_due_tasks(self):
+        """
+        Public method to process due tasks.
+
+        Called by the daemon scheduler loop.
+        """
+        await self._process_due_tasks()
+
     async def _process_due_tasks(self):
         """Process tasks that are due for execution."""
         current_time = time.time()
@@ -361,6 +435,17 @@ class TaskScheduler:
 
             if task.status != TaskStatus.PENDING.value:
                 continue  # Skip non-pending tasks
+
+            # CRITICAL: Check dependencies before executing
+            if task.depends_on and not self.are_dependencies_met(task.task_id):
+                # Re-queue task - dependencies not met yet
+                logger.debug(
+                    f"⏳ Task {task.task_id} waiting for dependencies: {task.depends_on}"
+                )
+                # Schedule to check again in 10 seconds
+                task.scheduled_time = current_time + 10.0
+                heapq.heappush(self._task_queue, task)
+                continue
 
             # Execute the task
             await self._execute_task(task)
@@ -867,6 +952,7 @@ class DroidAgentExecutor:
         max_steps: int = 50,
         reasoning: bool = True,
         memory_enabled: bool = True,
+        scheduler: "TaskScheduler" = None,
     ):
         """
         Initialize the DroidAgent executor.
@@ -878,6 +964,7 @@ class DroidAgentExecutor:
             max_steps: Maximum steps per task
             reasoning: Whether to use Manager/Executor reasoning mode
             memory_enabled: Whether to enable memory system
+            scheduler: Reference to scheduler for heartbeat updates
         """
         self.device_serial = device_serial
         self.llm_provider = llm_provider
@@ -886,6 +973,7 @@ class DroidAgentExecutor:
         self.reasoning = reasoning
         self.memory_enabled = memory_enabled
         self._agent = None
+        self._scheduler = scheduler
 
     async def __call__(self, task: ScheduledTask) -> Dict[str, Any]:
         """
@@ -923,7 +1011,7 @@ class DroidAgentExecutor:
 
             # Create agent
             agent = DroidAgent(
-                instruction=task.goal,
+                goal=task.goal,
                 config=config,
             )
 
@@ -931,6 +1019,7 @@ class DroidAgentExecutor:
             logger.info(f"🤖 Starting DroidAgent for task: {task.goal[:50]}...")
 
             result = {"success": False, "reason": "", "steps": 0}
+            step_count = 0
 
             handler = agent.run()
             async for event in handler.stream_events():
@@ -938,6 +1027,23 @@ class DroidAgentExecutor:
                 event_type = type(event).__name__
                 if event_type in ("ManagerPlanEvent", "ExecutorResultEvent", "FinalizeEvent"):
                     logger.debug(f"  Event: {event_type}")
+
+                # Update heartbeat on significant events to prevent stale detection
+                if event_type == "ExecutorResultEvent":
+                    step_count += 1
+                    if self._scheduler:
+                        self._scheduler.update_task_progress(
+                            task_id=task.task_id,
+                            current_step=step_count,
+                            progress_percent=min(100.0, (step_count / self.max_steps) * 100),
+                            last_action=f"Step {step_count} completed",
+                        )
+                elif event_type == "ManagerPlanEvent":
+                    if self._scheduler:
+                        self._scheduler.update_task_progress(
+                            task_id=task.task_id,
+                            last_action="Manager planning...",
+                        )
 
             # Get final result
             final_result = await handler
@@ -994,12 +1100,14 @@ def create_droid_scheduler(
     Returns:
         TaskScheduler configured with DroidAgentExecutor
     """
+    # Create executor first (without scheduler reference)
     executor = DroidAgentExecutor(
         device_serial=device_serial,
         llm_provider=llm_provider,
         model_name=model_name,
         max_steps=max_steps,
         memory_enabled=memory_enabled,
+        scheduler=None,  # Will be set after scheduler creation
     )
 
     config = SchedulerConfig(
@@ -1008,4 +1116,10 @@ def create_droid_scheduler(
         max_concurrent_tasks=max_concurrent,
     )
 
-    return TaskScheduler(config=config, task_executor=executor)
+    # Create scheduler
+    scheduler = TaskScheduler(config=config, task_executor=executor)
+
+    # Wire executor back to scheduler for heartbeat updates
+    executor._scheduler = scheduler
+
+    return scheduler

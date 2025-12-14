@@ -20,7 +20,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("droidrun.resources")
 
@@ -71,7 +71,7 @@ class DeviceResources:
         """Check if device has thermal warning."""
         return self.thermal_status in ("severe", "critical")
 
-    def can_execute_tasks(self, config: "ResourceConfig" = None) -> tuple[bool, str]:
+    def can_execute_tasks(self, config: "ResourceConfig" = None) -> Tuple[bool, str]:
         """
         Check if device can execute tasks.
 
@@ -615,6 +615,68 @@ class HumanEscalationQueue:
             "pending": pending,
             "resolved": resolved,
         }
+
+    def cleanup_old_items(
+        self,
+        max_resolved_items: int = 500,
+        max_age_days: int = 30,
+    ) -> int:
+        """
+        Clean up old resolved escalations to prevent unbounded growth.
+
+        Args:
+            max_resolved_items: Maximum resolved items to keep
+            max_age_days: Remove resolved items older than this many days
+
+        Returns:
+            Number of items removed
+        """
+        current_time = time.time()
+        max_age_seconds = max_age_days * 24 * 60 * 60
+        removed_count = 0
+
+        # Get resolved items
+        resolved_items = [
+            (i, item) for i, item in enumerate(self._queue)
+            if item.resolved
+        ]
+
+        # Sort by resolved_at time (oldest first)
+        resolved_items.sort(
+            key=lambda x: x[1].resolved_at or x[1].created_at
+        )
+
+        # Find items to remove (too old or excess)
+        items_to_remove = set()
+
+        # Remove items that are too old
+        for i, item in resolved_items:
+            item_time = item.resolved_at or item.created_at
+            if current_time - item_time > max_age_seconds:
+                items_to_remove.add(i)
+                removed_count += 1
+
+        # Remove excess items (keep newest)
+        remaining_resolved = [
+            (i, item) for i, item in resolved_items
+            if i not in items_to_remove
+        ]
+        if len(remaining_resolved) > max_resolved_items:
+            excess = len(remaining_resolved) - max_resolved_items
+            for i, _ in remaining_resolved[:excess]:
+                items_to_remove.add(i)
+                removed_count += 1
+
+        # Actually remove items (in reverse order to preserve indices)
+        if items_to_remove:
+            self._queue = [
+                item for i, item in enumerate(self._queue)
+                if i not in items_to_remove
+            ]
+            self._save_queue()
+            logger.info(f"🧹 Cleaned up {removed_count} old escalations")
+
+        return removed_count
 
 
 # Convenience functions

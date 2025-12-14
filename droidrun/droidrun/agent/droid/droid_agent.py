@@ -80,11 +80,26 @@ from droidrun.agent.utils.tracing_setup import (
 from opentelemetry import trace
 
 # Optional memory system integration
+# NEW: UnifiedMemorySystem with Titans (neural) + ReMe (procedural) memory
 try:
-    from droidrun.agent.memory import MemoryManager, MemoryConfig as MemoryManagerConfig, EpisodeRecord
+    from droidrun.agent.memory import (
+        # New unified memory system (Titans + ReMe)
+        UnifiedMemorySystem,
+        UnifiedMemoryConfig,
+        Trajectory,
+        # Legacy support
+        MemoryManager,
+        MemoryConfig as MemoryManagerConfig,
+        EpisodeRecord,
+    )
     MEMORY_AVAILABLE = True
+    UNIFIED_MEMORY_AVAILABLE = True
 except ImportError:
     MEMORY_AVAILABLE = False
+    UNIFIED_MEMORY_AVAILABLE = False
+    UnifiedMemorySystem = None
+    UnifiedMemoryConfig = None
+    Trajectory = None
     MemoryManager = None
     MemoryManagerConfig = None
     EpisodeRecord = None
@@ -218,22 +233,48 @@ class DroidAgent(Workflow):
         self.tools_instance = None
 
         # Initialize memory system if enabled and available
+        # NEW: Prefer UnifiedMemorySystem (Titans + ReMe), fallback to legacy MemoryManager
         self.memory_manager = None
+        self.unified_memory = None
+        self._use_unified_memory = False
+
         if MEMORY_AVAILABLE and self.config.memory.enabled:
-            try:
-                mem_config = MemoryManagerConfig(
-                    store_type=self.config.memory.store_type,
-                    collection_name=self.config.memory.collection_name,
-                    similarity_threshold=self.config.memory.similarity_threshold,
-                    qdrant_host=self.config.memory.qdrant_host,
-                    qdrant_port=self.config.memory.qdrant_port,
-                    qdrant_url=self.config.memory.qdrant_url,
-                    qdrant_api_key=self.config.memory.qdrant_api_key,
-                )
-                self.memory_manager = MemoryManager(config=mem_config)
-                logger.info("🧠 Memory system initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize memory system: {e}")
+            # Try to initialize UnifiedMemorySystem (Titans + ReMe)
+            if UNIFIED_MEMORY_AVAILABLE and UnifiedMemorySystem:
+                try:
+                    persist_dir = getattr(self.config.memory, 'persist_path', '.droidrun/memory')
+                    unified_config = UnifiedMemoryConfig(
+                        titans_persist_path=f"{persist_dir}/titans_state.pkl",
+                        reme_persist_path=f"{persist_dir}/reme_experiences.json",
+                        use_titans=True,
+                        use_reme=True,
+                        titans_memory_size=384,
+                        titans_num_slots=64,
+                        reme_max_experiences=5000,
+                    )
+                    self.unified_memory = UnifiedMemorySystem(config=unified_config)
+                    self._use_unified_memory = True
+                    logger.info("🧠 Unified Memory System initialized (Titans + ReMe)")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize UnifiedMemorySystem: {e}, falling back to legacy")
+                    self._use_unified_memory = False
+
+            # Fallback to legacy MemoryManager if unified failed or unavailable
+            if not self._use_unified_memory:
+                try:
+                    mem_config = MemoryManagerConfig(
+                        store_type=self.config.memory.store_type,
+                        collection_name=self.config.memory.collection_name,
+                        similarity_threshold=self.config.memory.similarity_threshold,
+                        qdrant_host=self.config.memory.qdrant_host,
+                        qdrant_port=self.config.memory.qdrant_port,
+                        qdrant_url=self.config.memory.qdrant_url,
+                        qdrant_api_key=self.config.memory.qdrant_api_key,
+                    )
+                    self.memory_manager = MemoryManager(config=mem_config)
+                    logger.info("🧠 Legacy Memory system initialized")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize memory system: {e}")
 
         super().__init__(*args, timeout=timeout, **kwargs)
 
@@ -426,6 +467,9 @@ class DroidAgent(Workflow):
                             self.trajectory,
                             stage=f"codeact_step_{self.shared_state.step_number}",
                         )
+                        # Prune history every 10 steps to prevent unbounded memory growth
+                        if self.shared_state.step_number % 10 == 0:
+                            self.shared_state.prune_history()
 
             result = await handler
 
@@ -752,6 +796,12 @@ class DroidAgent(Workflow):
             f"🔄 Step {self.shared_state.step_number}/{self.config.agent.max_steps} complete, looping to Manager"
         )
 
+        # Prune history every 10 steps to prevent unbounded memory growth
+        if self.shared_state.step_number % 10 == 0:
+            pruned = self.shared_state.prune_history()
+            if any(v > 0 for v in pruned.values()):
+                logger.debug(f"🧹 Pruned history: {pruned}")
+
         if self.config.logging.save_trajectory != "none":
             self.trajectory_writer.write(
                 self.trajectory, stage=f"step_{self.shared_state.step_number}"
@@ -828,6 +878,12 @@ class DroidAgent(Workflow):
         logger.info(
             f"🔄 Step {self.shared_state.step_number}/{self.config.agent.max_steps} complete, looping to Manager"
         )
+
+        # Prune history every 10 steps to prevent unbounded memory growth
+        if self.shared_state.step_number % 10 == 0:
+            pruned = self.shared_state.prune_history()
+            if any(v > 0 for v in pruned.values()):
+                logger.debug(f"🧹 Pruned history: {pruned}")
 
         if self.config.logging.save_trajectory != "none":
             self.trajectory_writer.write(
@@ -911,6 +967,12 @@ class DroidAgent(Workflow):
         logger.info(
             f"🔄 Step {self.shared_state.step_number}/{self.config.agent.max_steps} complete, looping to Manager"
         )
+
+        # Prune history every 10 steps to prevent unbounded memory growth
+        if self.shared_state.step_number % 10 == 0:
+            pruned = self.shared_state.prune_history()
+            if any(v > 0 for v in pruned.values()):
+                logger.debug(f"🧹 Pruned history: {pruned}")
 
         if self.config.logging.save_trajectory != "none":
             self.trajectory_writer.write(
@@ -1087,6 +1149,8 @@ class DroidAgent(Workflow):
         """
         Recall relevant past experiences for the current task.
 
+        Uses UnifiedMemorySystem (Titans + ReMe) if available, otherwise falls back to legacy.
+
         Args:
             task: The current task description
             goal: Optional goal description
@@ -1094,21 +1158,38 @@ class DroidAgent(Workflow):
         Returns:
             Context string with relevant past experiences, or empty string if memory not available
         """
-        if not self.memory_manager:
-            return ""
+        # Try UnifiedMemorySystem first (Titans + ReMe)
+        if self._use_unified_memory and self.unified_memory:
+            try:
+                context = await self.unified_memory.get_context_for_task(
+                    task=task,
+                    goal=goal or task,
+                    include_titans=True,
+                    include_reme=True,
+                    max_context_length=2000,
+                )
+                if context:
+                    logger.debug(f"📚 [Unified] Recalled memory context for task: {task[:50]}...")
+                return context
+            except Exception as e:
+                logger.warning(f"Failed to recall from UnifiedMemory: {e}")
+                # Don't return, try legacy fallback
 
-        try:
-            context = await self.memory_manager.get_context_for_task(
-                task=task,
-                goal=goal or task,
-                max_results=self.config.memory.max_recalled_episodes,
-            )
-            if context:
-                logger.debug(f"📚 Recalled memory context for task: {task[:50]}...")
-            return context
-        except Exception as e:
-            logger.warning(f"Failed to recall memory context: {e}")
-            return ""
+        # Fallback to legacy MemoryManager
+        if self.memory_manager:
+            try:
+                context = await self.memory_manager.get_context_for_task(
+                    task=task,
+                    goal=goal or task,
+                    max_results=self.config.memory.max_recalled_episodes,
+                )
+                if context:
+                    logger.debug(f"📚 [Legacy] Recalled memory context for task: {task[:50]}...")
+                return context
+            except Exception as e:
+                logger.warning(f"Failed to recall memory context: {e}")
+
+        return ""
 
     async def store_episode(
         self,
@@ -1121,9 +1202,12 @@ class DroidAgent(Workflow):
         learned_patterns: list = None,
         errors: list = None,
         tags: list = None,
+        duration_seconds: float = 0.0,
     ) -> str:
         """
         Store a completed episode in memory.
+
+        Uses UnifiedMemorySystem (Titans + ReMe) if available, otherwise falls back to legacy.
 
         Args:
             task: Task that was executed
@@ -1135,31 +1219,65 @@ class DroidAgent(Workflow):
             learned_patterns: Patterns learned during execution
             errors: Errors encountered
             tags: Tags for categorization
+            duration_seconds: How long the task took
 
         Returns:
-            Episode ID if stored, or empty string if memory not available
+            Episode ID or stats dict if stored, or empty string if memory not available
         """
-        if not self.memory_manager or not MEMORY_AVAILABLE or not EpisodeRecord:
-            return ""
+        # Try UnifiedMemorySystem first (Titans + ReMe)
+        if self._use_unified_memory and self.unified_memory and Trajectory:
+            try:
+                # Convert actions to step format for Trajectory
+                step_list = []
+                for action in (actions or []):
+                    if isinstance(action, dict):
+                        step_list.append(action)
+                    else:
+                        step_list.append({"action": str(action)})
 
-        try:
-            episode = EpisodeRecord(
-                task=task,
-                goal=goal,
-                final_success=success,
-                final_reason=reason,
-                steps=steps,
-                actions=actions or [],
-                learned_patterns=learned_patterns or [],
-                errors=errors or [],
-                tags=tags or [],
-            )
-            episode_id = await self.memory_manager.store_episode(episode)
-            logger.info(f"💾 Stored episode: {task[:50]}... (success={success})")
-            return episode_id
-        except Exception as e:
-            logger.warning(f"Failed to store episode: {e}")
-            return ""
+                trajectory = Trajectory(
+                    task=task,
+                    goal=goal,
+                    steps=step_list,
+                    final_success=success,
+                    final_reason=reason,
+                    duration_seconds=duration_seconds,
+                    metadata={
+                        "learned_patterns": learned_patterns or [],
+                        "errors": errors or [],
+                        "tags": tags or [],
+                        "step_count": steps,
+                    },
+                )
+                stats = await self.unified_memory.store_trajectory(trajectory)
+                logger.info(f"💾 [Unified] Stored trajectory: {task[:50]}... (success={success}, "
+                           f"titans={stats.get('titans_stored')}, reme_exp={stats.get('reme_experiences', 0)})")
+                return str(stats)
+            except Exception as e:
+                logger.warning(f"Failed to store to UnifiedMemory: {e}")
+                # Don't return, try legacy fallback
+
+        # Fallback to legacy MemoryManager
+        if self.memory_manager and MEMORY_AVAILABLE and EpisodeRecord:
+            try:
+                episode = EpisodeRecord(
+                    task=task,
+                    goal=goal,
+                    final_success=success,
+                    final_reason=reason,
+                    steps=steps,
+                    actions=actions or [],
+                    learned_patterns=learned_patterns or [],
+                    errors=errors or [],
+                    tags=tags or [],
+                )
+                episode_id = await self.memory_manager.store_episode(episode)
+                logger.info(f"💾 [Legacy] Stored episode: {task[:50]}... (success={success})")
+                return episode_id
+            except Exception as e:
+                logger.warning(f"Failed to store episode: {e}")
+
+        return ""
 
     async def get_memory_statistics(self) -> dict:
         """
@@ -1168,11 +1286,22 @@ class DroidAgent(Workflow):
         Returns:
             Dictionary with memory statistics, or empty dict if memory not available
         """
-        if not self.memory_manager:
-            return {}
+        # Try UnifiedMemorySystem first
+        if self._use_unified_memory and self.unified_memory:
+            try:
+                stats = self.unified_memory.get_statistics()
+                stats["memory_type"] = "unified"
+                return stats
+            except Exception as e:
+                logger.warning(f"Failed to get unified memory statistics: {e}")
 
-        try:
-            return await self.memory_manager.get_statistics()
-        except Exception as e:
-            logger.warning(f"Failed to get memory statistics: {e}")
-            return {}
+        # Fallback to legacy
+        if self.memory_manager:
+            try:
+                stats = await self.memory_manager.get_statistics()
+                stats["memory_type"] = "legacy"
+                return stats
+            except Exception as e:
+                logger.warning(f"Failed to get memory statistics: {e}")
+
+        return {}
