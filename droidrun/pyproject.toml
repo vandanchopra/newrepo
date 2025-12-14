@@ -9,9 +9,7 @@ dependencies = [
     "posthog>=6.7.6",
     "pydantic>=2.11.10",
     "rich>=14.1.0",
-    "arize-phoenix>=12.3.0",
     "httpx>=0.27.0",
-    "llama-index-callbacks-arize-phoenix>=0.6.1",
     "llama-index-workflows==2.8.3",
     "aiofiles>=25.1.0",
 ]
@@ -78,6 +76,14 @@ langfuse = [
     "langfuse>=2.0.0",
     "openinference-instrumentation-llama-index>=3.0.0",
     "llama-index-instrumentation"
+]
+phoenix = [
+    "arize-phoenix>=12.3.0",
+    "llama-index-callbacks-arize-phoenix>=0.6.1",
+]
+# Termux-friendly: core features without heavy scipy dependencies
+termux = [
+    "droidrun[anthropic]",
 ]
 
 [build-system]
@@ -174,9 +180,8 @@ contents = ["droidrun.tools.ios.IOSTools.*"]
 
 [dependency-groups]
 dev = [
-    "arize-phoenix>=11.32.1",
     "bandit>=1.8.6",
-    "llama-index-callbacks-arize-phoenix>=0.6.1",
     "ruff>=0.13.0",
     "safety>=3.2.11",
+    "droidrun[phoenix]",
 ]

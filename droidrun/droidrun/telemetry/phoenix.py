@@ -3,24 +3,38 @@ Arize Phoenix tracing integration for DroidRun.
 
 This module provides Phoenix instrumentation for tracing LLM calls and agent execution.
 It includes utilities for creating custom spans with clean names and context management.
+
+Note: This module requires optional dependencies:
+    pip install droidrun[phoenix]
 """
 
 import asyncio
 import functools
 import inspect
+import logging
 import os
 import uuid
 from contextvars import Token, copy_context
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-from llama_index.core.callbacks.base_handler import BaseCallbackHandler
-from llama_index_instrumentation import get_dispatcher
-from openinference.instrumentation import TraceConfig
+logger = logging.getLogger("droidrun.telemetry")
 
-dispatcher = get_dispatcher()
+# Optional imports - these are only available with phoenix extras
+try:
+    from llama_index.core.callbacks.base_handler import BaseCallbackHandler
+    from llama_index_instrumentation import get_dispatcher
+    from openinference.instrumentation import TraceConfig
+    dispatcher = get_dispatcher()
+    PHOENIX_AVAILABLE = True
+except ImportError:
+    BaseCallbackHandler = None
+    dispatcher = None
+    TraceConfig = None
+    PHOENIX_AVAILABLE = False
+    logger.debug("Phoenix tracing not available - install with: pip install droidrun[phoenix]")
 
 
-def arize_phoenix_callback_handler(**kwargs: Any) -> BaseCallbackHandler:
+def arize_phoenix_callback_handler(**kwargs: Any) -> Optional[Any]:
     """
     Create and configure an Arize Phoenix callback handler for LlamaIndex.
 
@@ -34,12 +48,19 @@ def arize_phoenix_callback_handler(**kwargs: Any) -> BaseCallbackHandler:
             - separate_trace_from_runtime_context: Separate traces from runtime context
 
     Returns:
-        Configured LlamaIndex instrumentor instance
+        Configured LlamaIndex instrumentor instance, or None if Phoenix not available
 
     Environment Variables:
         - PHOENIX_URL: Phoenix server URL
         - PHOENIX_PROJECT_NAME: Project name for organizing traces
     """
+    if not PHOENIX_AVAILABLE:
+        logger.warning(
+            "Phoenix tracing requested but not available. "
+            "Install with: pip install droidrun[phoenix]"
+        )
+        return None
+
     # newer versions of arize, v2.x
     from openinference.instrumentation.llama_index import LlamaIndexInstrumentor
     from openinference.semconv.resource import ResourceAttributes
@@ -84,6 +105,9 @@ def clean_span(span_name: str):
     It preserves parent-child relationships by using the same active span
     context variable as the built-in dispatcher decorator does.
 
+    If Phoenix is not available, this decorator is a no-op and simply runs
+    the original function.
+
     Args:
         span_name: The desired name for the span
 
@@ -92,6 +116,10 @@ def clean_span(span_name: str):
     """
 
     def decorator(func: Callable) -> Callable:
+        # If Phoenix not available, just return the original function
+        if not PHOENIX_AVAILABLE or dispatcher is None:
+            return func
+
         # Support both sync and async callables
         if inspect.iscoroutinefunction(func):
 
