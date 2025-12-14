@@ -141,7 +141,12 @@ async def run_autonomous(
     except ImportError as e:
         print(f"⚠️  Import warning: {e}")
 
-    # Try to use full DroidAgent if available
+    # On Termux, skip full DroidAgent (needs LLM API keys) - use Claude CLI directly
+    if on_termux:
+        print("📱 Termux detected - using Claude Code CLI (no API key needed)")
+        return await run_lightweight_mode(task, cli, max_steps)
+
+    # Try to use full DroidAgent if available (only on desktop with API keys)
     try:
         from droidrun.agent.droid import DroidAgent
         from droidrun.config_manager.config_manager import (
