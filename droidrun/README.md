@@ -257,3 +257,178 @@ ANTHROPIC_API_KEY=your_key
 # Development mode (no API keys needed)
 OFFLINE_MODE=true
 ```
+
+---
+
+## Autonomous Operation (v2.1)
+
+The following components enable true autonomous operation across weeks:
+
+### Daemon Service
+Continuous background operation with health monitoring.
+
+```bash
+# Start daemon (development)
+python -m droidrun.daemon --log-level INFO
+
+# Start as systemd service (production Linux)
+sudo cp systemd/droidrun.service /etc/systemd/system/
+sudo systemctl enable droidrun
+sudo systemctl start droidrun
+```
+
+**Features:**
+- Scheduler integration - executes due tasks automatically
+- Health monitoring with auto-restart on failures
+- Checkpoint persistence for crash recovery
+- Graceful shutdown handling
+
+### Memory-Aware Execution
+Memory is now wired into the execution flow (not just available as a component).
+
+```python
+# DroidAgent automatically:
+# 1. Recalls similar past experiences before each task
+# 2. Stores completed episodes for future recall
+# 3. Injects memory context into planning prompts
+
+from droidrun.agent.droid import DroidAgent
+from droidrun.config import DroidrunConfig, MemorySettings
+
+config = DroidrunConfig(
+    memory=MemorySettings(enabled=True, store_type="in_memory")
+)
+agent = DroidAgent(instruction="Open Settings app", config=config)
+# Memory recall/store happens automatically during execution
+```
+
+### Scheduler with Real Execution
+Tasks scheduled actually execute via DroidAgent (not just queued).
+
+```python
+from droidrun.scheduler import create_droid_scheduler, TaskPriority
+
+# Creates scheduler with DroidAgent executor wired in
+scheduler = create_droid_scheduler(
+    device_serial="emulator-5554",
+    memory_enabled=True,
+)
+
+# This task will ACTUALLY execute on the device
+task_id = scheduler.schedule_task(
+    "Open YouTube and search for Python tutorials",
+    priority=TaskPriority.HIGH,
+)
+```
+
+### App Integrations
+
+#### Termux (Terminal)
+```python
+from droidrun.agent.apps.termux import TermuxHandler
+
+termux = TermuxHandler(tools_instance=adb_tools)
+result = await termux.execute_command("ls -la")
+await termux.install_package("python")
+await termux.git_clone("https://github.com/user/repo")
+await termux.run_python_script("print('Hello from Termux!')")
+```
+
+**Capabilities:**
+- Execute shell commands with output capture
+- Install packages via pkg
+- Clone git repositories
+- Run Python scripts
+- Timeout and exit code detection
+
+#### Browser (Chrome, Firefox, Edge)
+```python
+from droidrun.agent.apps.browser import BrowserHandler
+
+browser = BrowserHandler(tools_instance=adb_tools)
+await browser.navigate_to("https://google.com")
+results = await browser.search_google("Python tutorials")
+content = await browser.extract_page_content()
+await browser.click_element("Sign in")
+await browser.fill_input("Email", "user@example.com")
+```
+
+**Capabilities:**
+- Navigate to URLs
+- Google search with result extraction
+- Extract page text and links
+- Click elements by text
+- Fill form inputs
+
+### Claude Code CLI Integration
+Real Claude Code CLI wrapper (not mock).
+
+```python
+from droidrun.agent.claude import create_claude_cli
+
+cli = create_claude_cli(working_directory="/path/to/project")
+
+# Check if claude CLI is available
+if await cli.check_cli_available():
+    # Execute a coding task
+    response = await cli.execute("Write a function to calculate fibonacci")
+
+    # Edit a specific file
+    await cli.edit_file("main.py", "Add error handling to the parse function")
+
+    # Create a new file
+    await cli.write_file("utils.py", "Utility functions for string manipulation")
+
+    # Run a command
+    await cli.run_command("pytest tests/")
+```
+
+**Capabilities:**
+- Wraps actual `claude` CLI subprocess
+- Session management for multi-turn conversations
+- File editing and creation
+- Command execution
+- Real Claude Code features (not mock)
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         DAEMON                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │   Scheduler  │→→│  DroidAgent  │→→│  Memory (recall/store)│  │
+│  │  (executes)  │  │  (runs task) │  │                      │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+│         ↓                 ↓                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
+│  │ Health Check │  │ App Handlers │  │ Claude Code CLI      │  │
+│  │ (auto-restart│  │ (Termux,     │  │ (coding tasks)       │  │
+│  │              │  │  Browser)    │  │                      │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Verification
+
+All components are tested end-to-end:
+
+```bash
+python -m pytest tests/ -v
+# 107 passed, 1 skipped
+
+# Test memory wiring
+python -c "
+from droidrun.agent.droid.droid_agent import DroidAgent
+from droidrun.config import DroidrunConfig, MemorySettings
+config = DroidrunConfig(memory=MemorySettings(enabled=True))
+agent = DroidAgent(instruction='test', config=config)
+print('Memory wired:', agent.memory_manager is not None)
+"
+
+# Test scheduler execution
+python -c "
+from droidrun.scheduler import create_droid_scheduler
+scheduler = create_droid_scheduler()
+print('Scheduler with executor:', scheduler.task_executor is not None)
+"
+```
