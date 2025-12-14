@@ -105,13 +105,39 @@ async def run_autonomous(
     print(f"⚡ Mode: {'Fast' if fast_mode else 'Standard'}")
     print("-" * 50)
 
-    # Detect environment
+    # Detect environment FIRST - before any heavy imports
     on_termux = is_termux()
     if on_termux:
         print("📍 Running on Termux (on-device)")
+        print("📱 Using Claude Code CLI (no API key needed)")
         setup_termux_adb()
-    else:
-        print("📍 Running on external machine")
+
+        # Check prerequisites
+        ok, issues = check_prerequisites()
+        if not ok:
+            print("\n❌ Prerequisites not met:")
+            for issue in issues:
+                print(f"   - {issue}")
+            return {"success": False, "error": "Prerequisites not met", "issues": issues}
+        print("✅ Prerequisites OK")
+
+        # Import ONLY the lightweight CLI wrapper - no DroidAgent, no LLMs
+        sys.path.insert(0, str(Path(__file__).parent))
+        from agent.claude.cli_wrapper import ClaudeCodeCLI, CLIConfig
+
+        cli = ClaudeCodeCLI(CLIConfig(timeout_seconds=120))
+        if not cli.is_available():
+            print("❌ Claude Code CLI not available")
+            return {"success": False, "error": "Claude Code CLI not available"}
+
+        print(f"✅ Claude Code CLI ready (v{cli.get_version()})")
+        print("-" * 50)
+
+        # Go directly to lightweight mode - NO DroidAgent, NO LLM configs
+        return await run_lightweight_mode(task, cli, max_steps)
+
+    # Non-Termux path (desktop with API keys)
+    print("📍 Running on external machine")
 
     # Check prerequisites
     ok, issues = check_prerequisites()
@@ -123,14 +149,11 @@ async def run_autonomous(
 
     print("✅ Prerequisites OK")
 
-    # Import DroidRun components
+    # Import DroidRun components (only on desktop)
     try:
-        # Try direct imports to avoid llama_index if possible
         sys.path.insert(0, str(Path(__file__).parent))
-
         from agent.claude.cli_wrapper import ClaudeCodeCLI, CLIConfig
 
-        # Initialize Claude Code CLI
         cli = ClaudeCodeCLI(CLIConfig(timeout_seconds=120))
         if not cli.is_available():
             print("❌ Claude Code CLI not available")
@@ -140,11 +163,6 @@ async def run_autonomous(
 
     except ImportError as e:
         print(f"⚠️  Import warning: {e}")
-
-    # On Termux, skip full DroidAgent (needs LLM API keys) - use Claude CLI directly
-    if on_termux:
-        print("📱 Termux detected - using Claude Code CLI (no API key needed)")
-        return await run_lightweight_mode(task, cli, max_steps)
 
     # Try to use full DroidAgent if available (only on desktop with API keys)
     try:
