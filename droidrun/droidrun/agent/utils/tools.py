@@ -583,11 +583,175 @@ async def build_custom_tools(credential_manager=None) -> dict:
         "function": open_app,
     }
 
-    # 3. Future: Add other custom tools here
-    # custom_tools["some_other_tool"] = {...}
+    # 3. Add app handler tools (Termux, Browser)
+    app_tools = await build_app_handler_tools()
+    custom_tools.update(app_tools)
 
     logger.info(f"Built {len(custom_tools)} custom tools: {list(custom_tools.keys())}")
     return custom_tools
+
+
+async def build_app_handler_tools() -> dict:
+    """
+    Build tools from app handlers (Termux, Browser).
+
+    These tools enable the agent to use high-level app-specific
+    actions when operating within those apps.
+
+    Returns:
+        Dictionary of app handler tools
+    """
+    import logging
+
+    logger = logging.getLogger("droidrun")
+    tools = {}
+
+    # Try to import app handlers
+    try:
+        from droidrun.agent.apps.termux import TermuxHandler
+        from droidrun.agent.apps.browser import BrowserHandler
+
+        # Termux tools
+        tools["termux_execute"] = {
+            "arguments": ["command"],
+            "description": (
+                'Execute a shell command in Termux terminal. '
+                'Use when in Termux to run commands directly. '
+                'Usage: {"action": "termux_execute", "command": "ls -la"}'
+            ),
+            "function": _termux_execute,
+        }
+
+        tools["termux_install_package"] = {
+            "arguments": ["package"],
+            "description": (
+                'Install a package in Termux using pkg. '
+                'Usage: {"action": "termux_install_package", "package": "python"}'
+            ),
+            "function": _termux_install_package,
+        }
+
+        # Browser tools
+        tools["browser_navigate"] = {
+            "arguments": ["url"],
+            "description": (
+                'Navigate to a URL in the browser. '
+                'Usage: {"action": "browser_navigate", "url": "https://google.com"}'
+            ),
+            "function": _browser_navigate,
+        }
+
+        tools["browser_search"] = {
+            "arguments": ["query"],
+            "description": (
+                'Search Google for a query. Opens browser and performs search. '
+                'Usage: {"action": "browser_search", "query": "Python tutorials"}'
+            ),
+            "function": _browser_search,
+        }
+
+        tools["browser_extract_content"] = {
+            "arguments": [],
+            "description": (
+                'Extract text content from the current web page. '
+                'Usage: {"action": "browser_extract_content"}'
+            ),
+            "function": _browser_extract_content,
+        }
+
+        logger.info(f"Added {len(tools)} app handler tools")
+
+    except ImportError as e:
+        logger.debug(f"App handlers not available: {e}")
+
+    return tools
+
+
+# App handler wrapper functions
+# These are called by the agent and create handler instances on demand
+
+async def _termux_execute(tools_instance, command: str) -> str:
+    """Execute a command in Termux."""
+    try:
+        from droidrun.agent.apps.termux import TermuxHandler
+
+        handler = TermuxHandler(tools_instance=tools_instance)
+        result = await handler.execute_command(command)
+
+        if result.success:
+            return f"Command executed successfully:\n{result.output}"
+        else:
+            return f"Command failed: {result.error or 'Unknown error'}\nOutput: {result.output}"
+    except Exception as e:
+        return f"Termux execution error: {e}"
+
+
+async def _termux_install_package(tools_instance, package: str) -> str:
+    """Install a package in Termux."""
+    try:
+        from droidrun.agent.apps.termux import TermuxHandler
+
+        handler = TermuxHandler(tools_instance=tools_instance)
+        result = await handler.install_package(package)
+
+        if result.success:
+            return f"Package '{package}' installed successfully"
+        else:
+            return f"Package installation failed: {result.error}"
+    except Exception as e:
+        return f"Termux installation error: {e}"
+
+
+async def _browser_navigate(tools_instance, url: str) -> str:
+    """Navigate to a URL."""
+    try:
+        from droidrun.agent.apps.browser import BrowserHandler
+
+        handler = BrowserHandler(tools_instance=tools_instance)
+        success = await handler.navigate_to(url)
+
+        if success:
+            return f"Navigated to {url}"
+        else:
+            return f"Failed to navigate to {url}"
+    except Exception as e:
+        return f"Browser navigation error: {e}"
+
+
+async def _browser_search(tools_instance, query: str) -> str:
+    """Search Google."""
+    try:
+        from droidrun.agent.apps.browser import BrowserHandler
+
+        handler = BrowserHandler(tools_instance=tools_instance)
+        result = await handler.search_google(query)
+
+        if result.success:
+            results_text = "\n".join(
+                f"- {r.get('title', 'No title')}: {r.get('snippet', '')[:100]}"
+                for r in result.results[:5]
+            )
+            return f"Search results for '{query}':\n{results_text}"
+        else:
+            return f"Search failed: {result.error}"
+    except Exception as e:
+        return f"Browser search error: {e}"
+
+
+async def _browser_extract_content(tools_instance) -> str:
+    """Extract page content."""
+    try:
+        from droidrun.agent.apps.browser import BrowserHandler
+
+        handler = BrowserHandler(tools_instance=tools_instance)
+        content = await handler.extract_page_content()
+
+        if content.success:
+            return f"Page: {content.title}\n\nContent:\n{content.text_content[:2000]}"
+        else:
+            return f"Content extraction failed: {content.error}"
+    except Exception as e:
+        return f"Browser extraction error: {e}"
 
 
 async def test_open_app(mock_tools, text: str) -> str:
